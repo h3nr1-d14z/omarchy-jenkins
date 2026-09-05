@@ -7,8 +7,17 @@ import Quickshell.Io
 // folder in /tmp (symlinking the real Service.qml/Model.js — Quickshell
 // sandboxes configs to their own folder, and the plugin tree itself must
 // stay symlink-free for the omarchy validator) and asserts on the dumped
-// state. Notifications are disabled so the test never touches the desktop
-// notification daemon.
+// state.
+//
+// Environment knobs (all optional):
+//   JH_E2E_TOKEN_FILE  token file path (default /tmp/jenkins-e2e/token)
+//   JH_E2E_NOTIFY=1    enable all notification categories (default off, so
+//                      tests never touch the desktop notification daemon)
+//   JH_E2E_SHIM_DIR    injected as the service's omarchyPath: a fake omarchy
+//                      tree whose bin/omarchy-notification-send logs its
+//                      arguments, capturing every emitted notification
+//   JH_E2E_QUIT_MS     dump-and-quit delay in ms (default 3000)
+//   JH_E2E_REFRESH     refreshIntervalSec (default 30)
 
 ShellRoot {
   id: app
@@ -18,27 +27,31 @@ ShellRoot {
   }
 
   Component.onCompleted: {
+    var shimDir = Quickshell.env("JH_E2E_SHIM_DIR") || ""
+    if (shimDir) service.omarchyPath = shimDir
+
+    var notify = Quickshell.env("JH_E2E_NOTIFY") === "1"
     service.applyConfig({
       jenkinsUrl: "http://127.0.0.1:28888",
       jenkinsUser: "e2e-user",
       tokenFile: Quickshell.env("JH_E2E_TOKEN_FILE") || "/tmp/jenkins-e2e/token",
-      refreshIntervalSec: 30,
+      refreshIntervalSec: parseInt(Quickshell.env("JH_E2E_REFRESH") || "30", 10),
       queueBacklogThreshold: 10,
       diskWarnGb: 25,
       diskCriticalGb: 10,
       responseTimeWarnMs: 1000,
-      notifyController: false,
-      notifyNodes: false,
-      notifyFailures: false,
-      notifyQueue: false,
-      notifyMaintenance: false
+      notifyController: notify,
+      notifyNodes: notify,
+      notifyFailures: notify,
+      notifyQueue: notify,
+      notifyMaintenance: notify
     })
   }
 
   Timer {
     // netrc write + five sequential curls against the local mock finish
-    // well inside 3s; dump state and quit.
-    interval: 3000
+    // well inside 3s; dump state and quit (JH_E2E_QUIT_MS overrides).
+    interval: parseInt(Quickshell.env("JH_E2E_QUIT_MS") || "3000", 10)
     running: true
     repeat: false
     onTriggered: {

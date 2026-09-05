@@ -1,22 +1,32 @@
 #!/usr/bin/env bash
 # Runtime E2E: drives Service.qml inside a standalone Quickshell instance
-# (tests/e2e/shell.qml, with Service.qml/Model.js symlinked in) against the
-# mock Jenkins server, one scenario at a time. Exercises the live wiring the
-# static checks cannot: netrc auth, sequential curl fetches, X-Jenkins
-# header capture, assessment, and the QML property surface.
+# (tests/e2e/shell.qml, with Service.qml/Model.js symlinked into a throwaway
+# /tmp config folder) against the mock Jenkins server.
+#
+# Phases:
+#   1. scenario dumps    — healthy / degraded / outage state assertions
+#   2. notification flow — healthy→degraded transition mid-run with
+#                          notifications captured via an omarchyPath shim;
+#                          asserts the exact edge-triggered event set (five
+#                          events, no duplicates on later polls, no
+#                          controller flapping)
+#   3. IPC surface       — live qs ipc calls against the running instance
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PORT=28888
 TOKEN_DIR=$(mktemp -d)
 MOCK_PID=""
+QS_PID=""
 FAILED=0
 
 cleanup() {
   [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
-  rm -rf "${E2E_DIR:-}" "$TOKEN_DIR"
+  [ -n "$QS_PID" ] && kill "$QS_PID" 2>/dev/null || true
+  rm -rf "${E2E_DIR:-}" "$TOKEN_DIR" "${SHIM_DIR:-}"
 }
 trap cleanup EXIT
+
 printf 'e2e-token-123\n' > "$TOKEN_DIR/token"
 
 # Quickshell sandboxes a config to its own folder, but the omarchy plugin
@@ -29,6 +39,7 @@ ln -s "$ROOT/Model.js" "$E2E_DIR/Model.js"
 cp "$ROOT/tests/e2e/shell.qml" "$E2E_DIR/shell.qml"
 
 start_mock() {
+  [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
   python3 "$ROOT/harness/mock_jenkins.py" "$1" "$PORT" >/dev/null 2>&1 &
   MOCK_PID=$!
   local i
@@ -39,6 +50,8 @@ start_mock() {
   echo "mock failed to start (scenario: $1)" >&2
   exit 1
 }
+
+# ---- phase 1: scenario dumps ----------------------------------------------
 
 run_scenario() {
   local scenario="$1" expect="$2"
@@ -73,12 +86,116 @@ run_scenario() {
   fi
 }
 
+# ---- phase 2: notification flow --------------------------------------------
+# The shim tree's bin/omarchy-notification-send logs every invocation; the
+# service's omarchyPath property (injected by the harness) points at it. The
+# first healthy snapshot emits nothing (null baseline); the mock then
+# switches to degraded, and the next poll must emit exactly the five
+# edge-triggered events. Subsequent polls of the same state emit nothing.
+
+run_notify_phase() {
+  SHIM_DIR=$(mktemp -d)
+  mkdir -p "$SHIM_DIR/bin"
+  cat > "$SHIM_DIR/bin/omarchy-notification-send" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$JH_NOTIFY_LOG"
+EOF
+  chmod +x "$SHIM_DIR/bin/omarchy-notification-send"
+  local notify_log="$SHIM_DIR/notifications.log"
+  : > "$notify_log"
+
+  start_mock healthy
+  JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
+    JH_NOTIFY_LOG="$notify_log" \
+    JH_E2E_NOTIFY=1 JH_E2E_SHIM_DIR="$SHIM_DIR" \
+    JH_E2E_REFRESH=5 JH_E2E_QUIT_MS=12000 \
+    qs -p "$E2E_DIR" >"$SHIM_DIR/qs.log" 2>&1 &
+  QS_PID=$!
+
+  # First (healthy) snapshot lands ~1s in; poll cadence is 5s, so switching
+  # the mock now (~0.3s window) cannot overlap a poll.
+  sleep 2
+  start_mock degraded
+  wait "$QS_PID" || true
+  QS_PID=""
+
+  echo "--- notification flow:" >&2
+  cat "$notify_log" >&2
+
+  local count
+  count=$(wc -l < "$notify_log")
+  if [ "$count" -ne 5 ]; then
+    echo "FAIL: notification flow — expected 5 notifications, got $count (see stderr)"
+    FAILED=1
+    return
+  fi
+  local want
+  for want in "Jenkins node offline" "Jenkins job failure" "Jenkins queue backlog" "Jenkins maintenance"; do
+    if ! grep -q "$want" "$notify_log"; then
+      echo "FAIL: notification flow — missing '$want' (see stderr)"
+      FAILED=1
+      return
+    fi
+  done
+  if grep -q "controller" "$notify_log"; then
+    echo "FAIL: notification flow — unexpected controller event (mock switch overlapped a poll?)"
+    FAILED=1
+    return
+  fi
+  if ! grep -q '"state":"warn"' "$SHIM_DIR/qs.log" || ! grep -q '"score":60' "$SHIM_DIR/qs.log"; then
+    echo "FAIL: notification flow — final dump is not degraded warn/60 (see stderr)"
+    FAILED=1
+    return
+  fi
+  echo "PASS: notification flow (5 edge-triggered events, no duplicates, no controller flap)"
+}
+
+# ---- phase 3: IPC surface ---------------------------------------------------
+
+run_ipc_phase() {
+  start_mock healthy
+  JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" JH_E2E_QUIT_MS=30000 \
+    qs -p "$E2E_DIR" >"$TOKEN_DIR/ipc.log" 2>&1 &
+  QS_PID=$!
+  sleep 2
+
+  local status refresh open
+  status=$(qs ipc --pid "$QS_PID" call jenkins-health status 2>&1 || true)
+  refresh=$(qs ipc --pid "$QS_PID" call jenkins-health refresh 2>&1 || true)
+  open=$(qs ipc --pid "$QS_PID" call jenkins-health open 2>&1 || true)
+  kill "$QS_PID" 2>/dev/null || true
+  wait "$QS_PID" 2>/dev/null || true
+  QS_PID=""
+  kill "$MOCK_PID" 2>/dev/null || true
+  MOCK_PID=""
+
+  echo "--- IPC responses:" >&2
+  printf 'status:  %s\nrefresh: %s\nopen:    %s\n' "$status" "$refresh" "$open" >&2
+
+  if ! printf '%s' "$status" | jq -e '(.state == "ok") and (.score == 100) and (.version == "2.440.3")' >/dev/null 2>&1; then
+    echo "FAIL: IPC status — got: $status"
+    FAILED=1
+    return
+  fi
+  if [ "$refresh" = "ok" ] && [ "$open" = "ok" ]; then
+    echo "PASS: IPC surface (status JSON, refresh, open)"
+  else
+    echo "FAIL: IPC — refresh='$refresh' open='$open'"
+    FAILED=1
+  fi
+}
+
+# ---- run --------------------------------------------------------------------
+
 run_scenario healthy \
   '(.state == "ok") and (.score == 100) and (.version == "2.440.3") and (.nodes == 6) and (.queueDepth == 2) and (.controllerStatus == "up")'
 run_scenario degraded \
   '(.state == "warn") and (.score == 60) and (.nodes == 6) and (.queueDepth == 12) and (.controllerStatus == "up")'
 run_scenario outage \
   '(.state == "critical") and (.score == 0) and (.controllerStatus == "unreachable")'
+
+run_notify_phase
+run_ipc_phase
 
 if [ "$FAILED" = 1 ]; then
   echo "E2E-FAILED"
