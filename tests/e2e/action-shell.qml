@@ -7,7 +7,14 @@ import Quickshell.Io
 // accepts safe-action POSTs, logging method, path, and the crumb header.
 // Proves the full action path at runtime:
 //   runAction → crumb fetch → buildActionCommand → POST execution →
-//   actionMessage feedback (which must survive the auto-refresh poll).
+//   actionMessage feedback (success and failure), which must survive the
+//   auto-refresh poll.
+//
+// JH_E2E_ACTIONS drives the action sequence (comma-separated, optional
+// :targetId suffix). The first action fires at t=2s (after netrc and the
+// first poll), then 600ms apart; the dump at 5.2s reflects the LAST
+// action's feedback. The server's behavior (which endpoints succeed,
+// whether the crumb endpoint exists) is driver-side.
 
 ShellRoot {
   id: app
@@ -16,7 +23,19 @@ ShellRoot {
     id: service
   }
 
+  property var actionList: []
+  property int actionIndex: 0
+
   Component.onCompleted: {
+    var raw = String(Quickshell.env("JH_E2E_ACTIONS") || "quietDown,cancelQueueItem:207,nodeOffline:build-agent-03,cancelQuietDown")
+    var list = []
+    var parts = raw.split(",")
+    for (var i = 0; i < parts.length; i++) {
+      var bits = parts[i].split(":")
+      list.push({ action: bits[0], targetId: bits.length > 1 ? bits[1] : null })
+    }
+    actionList = list
+
     service.applyConfig({
       jenkinsUrl: "http://127.0.0.1:28889",
       jenkinsUser: "e2e-user",
@@ -33,36 +52,42 @@ ShellRoot {
       notifyMaintenance: false
     })
   }
+
   Timer {
-    // Netrc completes ~0.5s in; the first poll fails against the action
-    // server (404 /api/json → outage state), which is fine — runAction
-    // only needs jenkinsUrl and netrcOk. Three spaced actions cover the
-    // three command shapes: bare endpoint, query-string targetId, and the
-    // computer path.
+    // Bootstrap: the first action fires at t=2s, then hands over to the
+    // 600ms repeating timer for the rest of the sequence.
     interval: 2000
     running: true
     repeat: false
-    onTriggered: service.runAction("quietDown", null)
+    onTriggered: {
+      if (actionList.length > 0) {
+        actionIndex = 1
+        service.runAction(actionList[0].action, actionList[0].targetId)
+      }
+      actionTimer.restart()
+    }
   }
 
   Timer {
-    interval: 2600
-    running: true
-    repeat: false
-    onTriggered: service.runAction("cancelQueueItem", 207)
+    id: actionTimer
+    interval: 600
+    repeat: true
+    onTriggered: {
+      if (actionIndex >= actionList.length) {
+        stop()
+        return
+      }
+      var item = actionList[actionIndex]
+      actionIndex += 1
+      service.runAction(item.action, item.targetId)
+    }
   }
 
   Timer {
-    interval: 3200
-    running: true
-    repeat: false
-    onTriggered: service.runAction("nodeOffline", "build-agent-03")
-  }
-
-  Timer {
-    // The action's auto-refresh poll fires ~1.2s after the POST; dumping
-    // at 4s proves the feedback survives it.
-    interval: 4000
+    // 4 actions fire at 2.0/2.6/3.2/3.8s; each chain (crumb + POST) takes
+    // ~0.1s locally, so the last action's feedback — success or failure —
+    // is stable well before this dump.
+    interval: 5200
     running: true
     repeat: false
     onTriggered: {

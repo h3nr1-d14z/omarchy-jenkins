@@ -507,7 +507,12 @@ class H(BaseHTTPRequestHandler):
         with open(log, "a") as f:
             f.write("POST %s\n" % self.path)
             f.write("crumb: %s\n" % self.headers.get("Jenkins-Crumb", ""))
-        self._reply(200, b'{}')
+        # cancelQuietDown is rejected — exercising the action-FAILURE
+        # feedback path (curl -f exits 22 on the 500).
+        if self.path == "/cancelQuietDown":
+            self._reply(500, b'{}')
+        else:
+            self._reply(200, b'{}')
 
     def log_message(self, *a):
         pass
@@ -541,8 +546,8 @@ PYEOF
     rm -f "$action_srv" "$action_log"
     return
   fi
-  if ! printf '%s' "${a#JH-E2E-A }" | jq -e '.actionMessage == "action sent"' >/dev/null 2>&1; then
-    echo "FAIL: action phase — feedback not persisted: $a"
+  if ! printf '%s' "${a#JH-E2E-A }" | jq -e '.actionMessage == "action failed (exit 22)"' >/dev/null 2>&1; then
+    echo "FAIL: action phase — failure feedback missing: $a"
     FAILED=1
     rm -f "$action_srv" "$action_log"
     return
@@ -550,13 +555,13 @@ PYEOF
   local posts crumbs
   posts=$(grep -c "^POST " "$action_log" || true)
   crumbs=$(grep -c "crumb: action-crumb-1" "$action_log" || true)
-  if [ "$posts" -ne 3 ] || [ "$crumbs" -ne 3 ]; then
-    echo "FAIL: action phase — expected 3 POSTs with crumbs, got $posts/$crumbs (see stderr)"
+  if [ "$posts" -ne 4 ] || [ "$crumbs" -ne 4 ]; then
+    echo "FAIL: action phase — expected 4 POSTs with crumbs, got $posts/$crumbs (see stderr)"
     FAILED=1
     rm -f "$action_srv" "$action_log"
     return
   fi
-  for want in "POST /quietDown" "POST /queue/cancelItem?id=207" "POST /computer/build-agent-03/doChangeOffline"; do
+  for want in "POST /quietDown" "POST /queue/cancelItem?id=207" "POST /computer/build-agent-03/doChangeOffline" "POST /cancelQuietDown"; do
     if ! grep -qF "$want" "$action_log"; then
       echo "FAIL: action phase — missing '$want' (see stderr)"
       FAILED=1
@@ -565,7 +570,7 @@ PYEOF
     fi
   done
   rm -f "$action_srv" "$action_log"
-  echo "PASS: safe actions (quietDown + cancelQueueItem?id + nodeOffline paths, 3 crumbs, persisted feedback)"
+  echo "PASS: safe actions (3 shapes succeed with crumbs, failure feedback on 500)"
 }
 
 # ---- phase 7: widget lifecycle -----------------------------------------------
@@ -602,6 +607,89 @@ run_lifecycle_phase() {
   fi
 }
 
+# ---- phase 7b: crumb-less actions --------------------------------------------
+# Old Jenkins can disable the crumb issuer: the crumb fetch fails (404),
+# the action POST must still fire — gracefully, without a crumb header.
+
+run_crumbless_phase() {
+  local srv log
+  srv=$(mktemp)
+  log=$(mktemp)
+  cat > "$srv" <<'PYEOF'
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+log = sys.argv[2]
+
+
+class H(BaseHTTPRequestHandler):
+    def _reply(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        # crumb issuer disabled, like old Jenkins configurations
+        self._reply(404, b'{}')
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        if n:
+            self.rfile.read(n)
+        with open(log, "a") as f:
+            f.write("POST %s\n" % self.path)
+            f.write("crumb: %s\n" % self.headers.get("Jenkins-Crumb", ""))
+        self._reply(200, b'{}')
+
+    def log_message(self, *a):
+        pass
+
+
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PYEOF
+  python3 "$srv" 28889 "$log" >/dev/null 2>&1 &
+  ACTION_PID=$!
+  local i
+  for i in $(seq 1 30); do
+    curl -s -o /dev/null "http://127.0.0.1:28889/anything" && break
+    sleep 0.1
+  done
+
+  JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" JH_E2E_ACTIONS="quietDown" \
+    qs -p "$E2E_DIR/action-shell.qml" >"$TOKEN_DIR/crumbless.log" 2>&1 || true
+  kill_wait "$ACTION_PID"
+  ACTION_PID=""
+
+  echo "--- crumb-less phase:" >&2
+  cat "$TOKEN_DIR/crumbless.log" >&2
+  echo "--- crumb-less server log:" >&2
+  cat "$log" >&2
+
+  local a
+  a=$(grep -o 'JH-E2E-A {.*}' "$TOKEN_DIR/crumbless.log" | tail -n1 || true)
+  if [ -z "$a" ] || ! printf '%s' "${a#JH-E2E-A }" | jq -e '.actionMessage == "action sent"' >/dev/null 2>&1; then
+    echo "FAIL: crumb-less phase — action did not succeed: $a"
+    FAILED=1
+    rm -f "$srv" "$log"
+    return
+  fi
+  if ! grep -q '^POST /quietDown$' "$log"; then
+    echo "FAIL: crumb-less phase — POST not received (see stderr)"
+    FAILED=1
+    rm -f "$srv" "$log"
+    return
+  fi
+  if grep -q "crumb: .\+" "$log"; then
+    echo "FAIL: crumb-less phase — a crumb header was sent despite the 404 issuer (see stderr)"
+    FAILED=1
+    rm -f "$srv" "$log"
+    return
+  fi
+  rm -f "$srv" "$log"
+  echo "PASS: crumb-less action (crumb fetch 404 → POST without crumb header, action succeeds)"
+}
 # ---- phase 8: auth failures ---------------------------------------------------
 # Proves the failure-classification branches execute in the LIVE service:
 # 401/403 → noauth with a credentials message, 3xx → unconfigured with a
@@ -688,6 +776,7 @@ run_auth_phase() {
 
 run_render_both_phases
 run_action_phase
+run_crumbless_phase
 run_lifecycle_phase
 run_auth_phase
 
