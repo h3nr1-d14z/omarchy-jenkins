@@ -54,7 +54,7 @@ middle-click to refresh immediately.
 The service exposes five commands to scripts and other plugins:
 
 ```bash
-qs ipc call jenkins-health refresh   # poll now (returns "ok")
+qs ipc call jenkins-health refresh   # re-read the token, then poll now
 qs ipc call jenkins-health status    # JSON state summary
 qs ipc call jenkins-health open      # open the detail panel (all monitors)
 qs ipc call jenkins-health close     # close the detail panel

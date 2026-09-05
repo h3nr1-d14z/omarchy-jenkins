@@ -49,8 +49,10 @@ Item {
     internal.onConfigChanged()
   }
 
+  // Refresh re-reads the token file before polling, so token rotation
+  // applies without restarting the shell.
   function refresh() {
-    internal.poll()
+    internal.reauth()
   }
 
   // ---- live widget registry: the service owns the single IPC target and
@@ -101,6 +103,8 @@ Item {
     property var pendingAction: null
     property string netrcPath: ""
     property string jenkinsUrl: ""
+    property string user: ""
+    property string tokenFile: ""
     property int generation: 0
     property int pollGeneration: -1
 
@@ -129,8 +133,8 @@ Item {
       statusMessage = ""
 
       jenkinsUrl = String(root.config.jenkinsUrl || "").trim()
-      var user = String(root.config.jenkinsUser || "").trim()
-      var tokenFile = String(root.config.tokenFile || "~/.config/jenkins-health/token")
+      user = String(root.config.jenkinsUser || "").trim()
+      tokenFile = String(root.config.tokenFile || "~/.config/jenkins-health/token")
 
       if (!jenkinsUrl || !user) {
         stateName = "unconfigured"
@@ -148,7 +152,19 @@ Item {
 
       stateName = "starting"
       statusMessage = "reading API token…"
+      reauth()
+    }
 
+    // Re-read the token file and rewrite the netrc (onNetrcExit chains into
+    // a poll on success). Also the entry point for refresh(): token rotation
+    // applies without restarting the shell.
+    function reauth() {
+      if (!jenkinsUrl || !user || netrcProcess.running) return
+      netrcProcess.command = netrcCommand()
+      netrcProcess.running = true
+    }
+
+    function netrcCommand() {
       // Everything reaches the script as a positional argument: no quoting
       // hazards, and the token itself is only ever touched inside bash.
       var script = [
@@ -163,9 +179,7 @@ Item {
         'chmod 600 "$out"',
         'echo ok'
       ].join("\n")
-
-      netrcProcess.command = ["bash", "-c", script, "jh-netrc", netrcPath, tokenFile, user, jenkinsUrl]
-      netrcProcess.running = true
+      return ["bash", "-c", script, "jh-netrc", netrcPath, tokenFile, user, jenkinsUrl]
     }
 
     function onNetrcExit(text) {

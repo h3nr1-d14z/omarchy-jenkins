@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "h3nr1.d14z.jenkins",
   "name": "Jenkins Health",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "H3nr1 D14z",
   "license": "MIT",
   "description": "Jenkins controller health in the Omarchy bar: live polling of controller, nodes, queue, jobs, and plugin updates; a notification layer for controller outages, node changes, job failures, queue backlogs, and maintenance; and safe actions (quiet-down toggle, cancel queue item, node online/offline).",
