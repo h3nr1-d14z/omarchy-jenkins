@@ -51,12 +51,18 @@ middle-click to refresh immediately.
 
 ## IPC
 
-The service exposes two commands to scripts and other plugins:
+The service exposes five commands to scripts and other plugins:
 
 ```bash
 qs ipc call jenkins-health refresh   # poll now (returns "ok")
 qs ipc call jenkins-health status    # JSON state summary
+qs ipc call jenkins-health open      # open the detail panel (all monitors)
+qs ipc call jenkins-health close     # close the detail panel
+qs ipc call jenkins-health toggle    # toggle the detail panel
 ```
+
+Handy for an omarchy-menu entry, e.g. an action running
+`qs ipc call jenkins-health toggle`.
 
 `status` returns `{"state": "ok", "level": "ok", "score": 96, "version": "2.440.3", "updated": "09:41:02", "message": ""}`.
 

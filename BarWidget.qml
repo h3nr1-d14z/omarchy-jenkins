@@ -40,9 +40,23 @@ BarWidget {
     })
   }
 
-  Component.onCompleted: pushConfig()
+  // Register with the service so its single IPC target can relay panel
+  // commands (open/close/toggle) to every monitor's widget instance.
+  function attachService() {
+    pushConfig()
+    if (service && typeof service.registerWidget === "function") service.registerWidget(root)
+  }
+
+  function openPopup() { popupOpen = true }
+  function closePopup() { popupOpen = false }
+  function togglePopup() { popupOpen = !popupOpen }
+
+  Component.onCompleted: attachService()
   onSettingsChanged: pushConfig()
-  onServiceChanged: pushConfig()
+  onServiceChanged: attachService()
+  Component.onDestroyed: if (service && typeof service.unregisterWidget === "function") {
+    service.unregisterWidget(root)
+  }
 
   readonly property color statusColor: state === "critical" ? Color.urgent
     : state === "warn" ? Color.accent

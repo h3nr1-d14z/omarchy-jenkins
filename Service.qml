@@ -53,6 +53,32 @@ Item {
     internal.poll()
   }
 
+  // ---- live widget registry: the service owns the single IPC target and
+  // relays panel commands to every monitor's BarWidget instance. Registering
+  // here (instead of per-widget IpcHandlers) sidesteps duplicate-target
+  // semantics entirely.
+  property var widgets: ([])
+
+  function registerWidget(w) {
+    if (!w || widgets.indexOf(w) !== -1) return
+    widgets = widgets.concat([w])
+  }
+
+  function unregisterWidget(w) {
+    var i = widgets.indexOf(w)
+    if (i === -1) return
+    var next = widgets.slice()
+    next.splice(i, 1)
+    widgets = next
+  }
+
+  function relayToWidgets(method) {
+    for (var i = 0; i < widgets.length; i++) {
+      var w = widgets[i]
+      if (w && typeof w[method] === "function") w[method]()
+    }
+  }
+
   // action: string ("quietDown" | "cancelQuietDown" | "cancelQueueItem" |
   //                 "nodeOffline" | "nodeOnline") or descriptor object.
   function runAction(action, targetId) {
@@ -340,13 +366,30 @@ Item {
   // IPC surface for scripts and other plugins:
   //   qs ipc call jenkins-health refresh
   //   qs ipc call jenkins-health status
+  //   qs ipc call jenkins-health open | close | toggle   (detail panel)
   // Lives on the service (a single instance) so a multi-monitor bar can
-  // never collide on the target name.
+  // never collide on the target name; panel commands relay to every
+  // registered widget.
   IpcHandler {
     target: "jenkins-health"
 
     function refresh(): string {
       root.refresh()
+      return "ok"
+    }
+
+    function open(): string {
+      root.relayToWidgets("openPopup")
+      return "ok"
+    }
+
+    function close(): string {
+      root.relayToWidgets("closePopup")
+      return "ok"
+    }
+
+    function toggle(): string {
+      root.relayToWidgets("togglePopup")
       return "ok"
     }
 
