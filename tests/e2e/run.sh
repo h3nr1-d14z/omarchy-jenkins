@@ -17,11 +17,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PORT=28888
 TOKEN_DIR=$(mktemp -d)
 MOCK_PID=""
+ACTION_PID=""
 QS_PID=""
 FAILED=0
 
 cleanup() {
   [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
+  [ -n "$ACTION_PID" ] && kill "$ACTION_PID" 2>/dev/null || true
   [ -n "$QS_PID" ] && kill "$QS_PID" 2>/dev/null || true
   rm -rf "${E2E_DIR:-}" "$TOKEN_DIR" "${SHIM_DIR:-}"
 }
@@ -46,6 +48,8 @@ ln -s /usr/share/omarchy/shell/Commons "$E2E_DIR/Commons"
 cp "$ROOT/tests/e2e/shell.qml" "$E2E_DIR/shell.qml"
 cp "$ROOT/tests/e2e/widget-shell.qml" "$E2E_DIR/widget-shell.qml"
 cp "$ROOT/tests/e2e/render-shell.qml" "$E2E_DIR/render-shell.qml"
+cp "$ROOT/tests/e2e/action-shell.qml" "$E2E_DIR/action-shell.qml"
+cp "$ROOT/tests/e2e/lifecycle-shell.qml" "$E2E_DIR/lifecycle-shell.qml"
 
 start_mock() {
   [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
@@ -306,7 +310,132 @@ run_render_phase() {
   echo "PASS: render phase (${size}B capture, saved /tmp/jenkins-health-render.png)"
 }
 
+# ---- phase 6: safe actions ---------------------------------------------------
+# An inline action server (NOT the frozen harness mock) serves the crumb
+# endpoint and accepts safe-action POSTs, logging the request. Proves the
+# full action path: runAction → crumb fetch → buildActionCommand → POST →
+# actionMessage feedback that survives the auto-refresh poll.
+
+run_action_phase() {
+  local action_srv action_log
+  action_srv=$(mktemp)
+  action_log=$(mktemp)
+  cat > "$action_srv" <<'PYEOF'
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+port = int(sys.argv[1])
+log = sys.argv[2]
+
+
+class H(BaseHTTPRequestHandler):
+    def _reply(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/crumbIssuer/api/json":
+            self._reply(200, b'{"crumb":"action-crumb-1","crumbRequestField":"Jenkins-Crumb"}')
+        else:
+            self._reply(404, b'{}')
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        if n:
+            self.rfile.read(n)
+        with open(log, "a") as f:
+            f.write("POST %s\\n" % self.path)
+            f.write("crumb: %s\\n" % self.headers.get("Jenkins-Crumb", ""))
+        self._reply(200, b'{}')
+
+    def log_message(self, *a):
+        pass
+
+
+HTTPServer(("127.0.0.1", port), H).serve_forever()
+PYEOF
+  python3 "$action_srv" 28889 "$action_log" >/dev/null 2>&1 &
+  ACTION_PID=$!
+  local i
+  for i in $(seq 1 30); do
+    curl -s -o /dev/null "http://127.0.0.1:28889/crumbIssuer/api/json" && break
+    sleep 0.1
+  done
+
+  JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
+    qs -p "$E2E_DIR/action-shell.qml" >"$TOKEN_DIR/action.log" 2>&1 || true
+  kill "$ACTION_PID" 2>/dev/null || true
+  ACTION_PID=""
+
+  echo "--- action phase:" >&2
+  cat "$TOKEN_DIR/action.log" >&2
+  echo "--- action server log:" >&2
+  cat "$action_log" >&2
+
+  local a
+  a=$(grep -o 'JH-E2E-A {.*}' "$TOKEN_DIR/action.log" | tail -n1 || true)
+  if [ -z "$a" ]; then
+    echo "FAIL: action phase — no dump"
+    FAILED=1
+    rm -f "$action_srv" "$action_log"
+    return
+  fi
+  if ! printf '%s' "${a#JH-E2E-A }" | jq -e '.actionMessage == "action sent"' >/dev/null 2>&1; then
+    echo "FAIL: action phase — feedback not persisted: $a"
+    FAILED=1
+    rm -f "$action_srv" "$action_log"
+    return
+  fi
+  if ! grep -q "POST /quietDown" "$action_log" || ! grep -q "crumb: action-crumb-1" "$action_log"; then
+    echo "FAIL: action phase — POST/crumb not received (see stderr)"
+    FAILED=1
+    rm -f "$action_srv" "$action_log"
+    return
+  fi
+  rm -f "$action_srv" "$action_log"
+  echo "PASS: safe actions (crumb + POST /quietDown + persisted feedback)"
+}
+
+# ---- phase 7: widget lifecycle -----------------------------------------------
+# Registry across the full lifecycle: static registration, dynamic creation
+# (multi-monitor analog), relay to all widgets, unregister on destruction.
+
+run_lifecycle_phase() {
+  start_mock healthy
+  JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
+    qs -p "$E2E_DIR/lifecycle-shell.qml" >"$TOKEN_DIR/lifecycle.log" 2>&1 || true
+  kill "$MOCK_PID" 2>/dev/null || true
+  MOCK_PID=""
+
+  echo "--- lifecycle phase:" >&2
+  cat "$TOKEN_DIR/lifecycle.log" >&2
+
+  local l1 l2 l3
+  l1=$(grep -o 'JH-E2E-L1 {.*}' "$TOKEN_DIR/lifecycle.log" | tail -n1 || true)
+  l2=$(grep -o 'JH-E2E-L2 {.*}' "$TOKEN_DIR/lifecycle.log" | tail -n1 || true)
+  l3=$(grep -o 'JH-E2E-L3 {.*}' "$TOKEN_DIR/lifecycle.log" | tail -n1 || true)
+
+  if [ -z "$l1" ] || [ -z "$l2" ] || [ -z "$l3" ]; then
+    echo "FAIL: lifecycle phase — missing dumps (L1='$l1' L2='$l2' L3='$l3')"
+    FAILED=1
+    return
+  fi
+  if printf '%s' "${l1#JH-E2E-L1 }" | jq -e '.registered == 1' >/dev/null 2>&1 \
+    && printf '%s' "${l2#JH-E2E-L2 }" | jq -e '(.registered == 2) and (.w1open == true) and (.w2open == true)' >/dev/null 2>&1 \
+    && printf '%s' "${l3#JH-E2E-L3 }" | jq -e '(.registered == 1) and (.w1open == true)' >/dev/null 2>&1; then
+    echo "PASS: widget lifecycle (static + dynamic registration, relay to both, unregister on destruction)"
+  else
+    echo "FAIL: lifecycle phase — L1: $l1 L2: $l2 L3: $l3"
+    FAILED=1
+  fi
+}
+
 run_render_phase
+run_action_phase
+run_lifecycle_phase
 if [ "$FAILED" = 1 ]; then
   echo "E2E-FAILED"
   exit 1

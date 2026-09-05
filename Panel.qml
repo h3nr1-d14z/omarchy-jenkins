@@ -211,7 +211,7 @@ Item {
               id: nodeAction
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              text: modelData.state === "online" ? "Offline" : "Online"
+              text: modelData.state === "online" ? "Take offline" : "Bring online"
               fontSize: Style.font.bodySmall
               enabled: root.actionsEnabled
               onClicked: if (root.service) {
@@ -367,8 +367,12 @@ Item {
         Text {
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
-          visible: root.service && root.service.statusMessage
-          text: root.service ? root.service.statusMessage : ""
+          // State messages (config/auth problems) take precedence; action
+          // feedback ("action sent") persists until the next action or
+          // reconfiguration, surviving the auto-refresh poll.
+          visible: root.service && (root.service.statusMessage || root.service.actionMessage)
+          text: root.service
+            ? (root.service.statusMessage || root.service.actionMessage) : ""
           color: Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall

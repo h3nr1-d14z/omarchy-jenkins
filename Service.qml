@@ -39,6 +39,7 @@ Item {
     ? (internal.snapshot.controller.version || "") : ""
   readonly property string lastUpdated: internal.lastUpdatedText
   readonly property string statusMessage: internal.statusMessage
+  readonly property string actionMessage: internal.actionMessage
   readonly property bool busy: internal.busy
 
   function applyConfig(cfg) {
@@ -96,6 +97,7 @@ Item {
     property var queueItems: []
     property string lastUpdatedText: ""
     property string statusMessage: ""
+    property string actionMessage: ""
     property bool busy: false
     property bool netrcOk: false
     property var fetched: ({})
@@ -131,6 +133,7 @@ Item {
       busy = false
       stepIndex = -1
       statusMessage = ""
+      actionMessage = ""
 
       jenkinsUrl = String(root.config.jenkinsUrl || "").trim()
       user = String(root.config.jenkinsUser || "").trim()
@@ -334,7 +337,7 @@ Item {
       pendingAction = (action && typeof action === "object")
         ? action
         : { action: String(action || ""), targetId: targetId }
-      statusMessage = "running action…"
+      actionMessage = "running action…"
       crumbProcess.command = Model.buildCurlArgs("/crumbIssuer/api/json", "GET", jenkinsUrl, netrcPath, null)
       crumbProcess.running = true
     }
@@ -357,7 +360,7 @@ Item {
     }
 
     function onActionExit(exitCode) {
-      statusMessage = exitCode === 0
+      actionMessage = exitCode === 0
         ? "action sent"
         : "action failed (exit " + exitCode + ")"
       actionRefreshTimer.restart()
