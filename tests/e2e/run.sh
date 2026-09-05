@@ -36,7 +36,15 @@ printf 'e2e-token-123\n' > "$TOKEN_DIR/token"
 E2E_DIR=$(mktemp -d)
 ln -s "$ROOT/Service.qml" "$E2E_DIR/Service.qml"
 ln -s "$ROOT/Model.js" "$E2E_DIR/Model.js"
+ln -s "$ROOT/BarWidget.qml" "$E2E_DIR/BarWidget.qml"
+ln -s "$ROOT/Panel.qml" "$E2E_DIR/Panel.qml"
+# qs.* imports resolve against the config folder: provide the Omarchy
+# shell's Ui and Commons trees so BarWidget/Panel load with their real
+# base classes and singletons.
+ln -s /usr/share/omarchy/shell/Ui "$E2E_DIR/Ui"
+ln -s /usr/share/omarchy/shell/Commons "$E2E_DIR/Commons"
 cp "$ROOT/tests/e2e/shell.qml" "$E2E_DIR/shell.qml"
+cp "$ROOT/tests/e2e/widget-shell.qml" "$E2E_DIR/widget-shell.qml"
 
 start_mock() {
   [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
@@ -189,6 +197,51 @@ run_ipc_phase() {
   fi
 }
 
+# ---- phase 4: widget + panel load ------------------------------------------
+# Loads the real BarWidget.qml (and Panel.qml via its PopupCard) against the
+# real Service through a fake bar host. Proves the production settings flow
+# (widget settings → applyConfig → service polls), widget registration, and
+# the IPC panel-open relay landing on a live registered widget.
+
+run_widget_phase() {
+  start_mock healthy
+  JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
+    qs -p "$E2E_DIR/widget-shell.qml" >"$TOKEN_DIR/widget.log" 2>&1 &
+  QS_PID=$!
+  sleep 4.5
+
+  local opened
+  opened=$(qs ipc --pid "$QS_PID" call jenkins-health open 2>&1 || true)
+  wait "$QS_PID" || true
+  QS_PID=""
+  kill "$MOCK_PID" 2>/dev/null || true
+  MOCK_PID=""
+
+  echo "--- widget phase log:" >&2
+  cat "$TOKEN_DIR/widget.log" >&2
+
+  local w1 w2
+  w1=$(grep -o 'JH-E2E-W1 {.*}' "$TOKEN_DIR/widget.log" | tail -n1 || true)
+  w2=$(grep -o 'JH-E2E-W2 {.*}' "$TOKEN_DIR/widget.log" | tail -n1 || true)
+
+  if [ -z "$w1" ] || [ -z "$w2" ]; then
+    echo "FAIL: widget load — missing dump (W1='$w1' W2='$w2', open='$opened')"
+    FAILED=1
+    return
+  fi
+  if ! printf '%s' "${w1#JH-E2E-W1 }" | jq -e '(.registered == 1) and (.widgetState == "ok") and (.chipText == "100") and (.serviceState == "ok")' >/dev/null 2>&1; then
+    echo "FAIL: widget load — W1 invariant not met: $w1"
+    FAILED=1
+    return
+  fi
+  if [ "$opened" = "ok" ] && printf '%s' "${w2#JH-E2E-W2 }" | jq -e '.popupOpen == true' >/dev/null 2>&1; then
+    echo "PASS: widget + panel load (settings flow, registration, IPC open relay)"
+  else
+    echo "FAIL: widget load — open='$opened' W2: $w2"
+    FAILED=1
+  fi
+}
+
 # ---- run --------------------------------------------------------------------
 
 run_scenario healthy \
@@ -200,6 +253,7 @@ run_scenario outage \
 
 run_notify_phase
 run_ipc_phase
+run_widget_phase
 
 if [ "$FAILED" = 1 ]; then
   echo "E2E-FAILED"
