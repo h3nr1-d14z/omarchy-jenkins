@@ -49,6 +49,17 @@ middle-click to refresh immediately.
 | `responseTimeWarnMs` | `1000` | Node response-time threshold. |
 | `notifyController`, `notifyNodes`, `notifyFailures`, `notifyQueue`, `notifyMaintenance` | `On` | Per-category notification toggles. |
 
+## IPC
+
+The service exposes two commands to scripts and other plugins:
+
+```bash
+qs ipc call jenkins-health refresh   # poll now (returns "ok")
+qs ipc call jenkins-health status    # JSON state summary
+```
+
+`status` returns `{"state": "ok", "level": "ok", "score": 96, "version": "2.440.3", "updated": "09:41:02", "message": ""}`.
+
 ## Install
 
 For development (symlink; edits hot-reload into the running shell):
