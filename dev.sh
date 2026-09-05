@@ -53,3 +53,4 @@ elif command -v omarchy-shell >/dev/null 2>&1; then
 fi
 
 echo "==> Token file (chmod 600): ~/.config/jenkins-health/token"
+echo "==> Panel summon / refresh: qs ipc call jenkins-health toggle|open|refresh"
