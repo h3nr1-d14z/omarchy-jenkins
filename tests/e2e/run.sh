@@ -122,6 +122,15 @@ EOF
   echo "--- notification flow:" >&2
   cat "$notify_log" >&2
 
+  # Check the timing hazard first: a poll landing in the mock-switch window
+  # would emit controller-down/up events — diagnose that specifically
+  # before the exact-count assertion turns it into a confusing number.
+  if grep -q "controller" "$notify_log"; then
+    echo "FAIL: notification flow — unexpected controller event (mock switch overlapped a poll?)"
+    FAILED=1
+    return
+  fi
+
   local count
   count=$(wc -l < "$notify_log")
   if [ "$count" -ne 5 ]; then
@@ -137,11 +146,6 @@ EOF
       return
     fi
   done
-  if grep -q "controller" "$notify_log"; then
-    echo "FAIL: notification flow — unexpected controller event (mock switch overlapped a poll?)"
-    FAILED=1
-    return
-  fi
   if ! grep -q '"state":"warn"' "$SHIM_DIR/qs.log" || ! grep -q '"score":60' "$SHIM_DIR/qs.log"; then
     echo "FAIL: notification flow — final dump is not degraded warn/60 (see stderr)"
     FAILED=1
