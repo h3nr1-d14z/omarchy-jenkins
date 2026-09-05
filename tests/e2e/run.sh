@@ -22,9 +22,9 @@ QS_PID=""
 FAILED=0
 
 cleanup() {
-  [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
-  [ -n "$ACTION_PID" ] && kill "$ACTION_PID" 2>/dev/null || true
-  [ -n "$QS_PID" ] && kill "$QS_PID" 2>/dev/null || true
+  kill_wait "$MOCK_PID"
+  kill_wait "$ACTION_PID"
+  kill_wait "$QS_PID"
   rm -rf "${E2E_DIR:-}" "$TOKEN_DIR" "${SHIM_DIR:-}"
 }
 trap cleanup EXIT
@@ -50,17 +50,55 @@ cp "$ROOT/tests/e2e/widget-shell.qml" "$E2E_DIR/widget-shell.qml"
 cp "$ROOT/tests/e2e/render-shell.qml" "$E2E_DIR/render-shell.qml"
 cp "$ROOT/tests/e2e/action-shell.qml" "$E2E_DIR/action-shell.qml"
 cp "$ROOT/tests/e2e/lifecycle-shell.qml" "$E2E_DIR/lifecycle-shell.qml"
+cp "$ROOT/tests/e2e/auth-shell.qml" "$E2E_DIR/auth-shell.qml"
 
-start_mock() {
-  [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
-  python3 "$ROOT/harness/mock_jenkins.py" "$1" "$PORT" >/dev/null 2>&1 &
-  MOCK_PID=$!
-  local i
-  for i in $(seq 1 30); do
-    curl -s -o /dev/null "http://127.0.0.1:$PORT/api/json" && return 0
+# Kill a background server and WAIT for it to die. Python's
+# ThreadingHTTPServer.server_close() can block on lingering keep-alive
+# handler threads, so a bare kill may leave the port held — and a new
+# server would then fail to bind while the old one keeps answering.
+kill_wait() {
+  local pid="$1" i
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null || true
+  for i in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || return 0
     sleep 0.1
   done
-  echo "mock failed to start (scenario: $1)" >&2
+  kill -9 "$pid" 2>/dev/null || true
+  for i in $(seq 1 10); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  return 0
+}
+
+start_mock() {
+  kill_wait "$MOCK_PID"
+  MOCK_PID=""
+  python3 "$ROOT/harness/mock_jenkins.py" "$1" "$PORT" >/dev/null 2>&1 &
+  MOCK_PID=$!
+
+  # Content-aware readiness: a stale server holding the port would answer
+  # a liveness probe with the WRONG scenario. Verify the mock actually
+  # serves the requested fixture.
+  local want="$1" i depth code
+  for i in $(seq 1 40); do
+    case "$want" in
+      outage)
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+          "http://127.0.0.1:$PORT/api/json" 2>/dev/null || true)
+        [ "$code" = "502" ] && return 0
+        ;;
+      *)
+        depth=$(curl -fsS --max-time 2 "http://127.0.0.1:$PORT/queue/api/json" 2>/dev/null \
+          | jq -r '.items | length' 2>/dev/null || true)
+        if [ "$want" = "healthy" ] && [ "$depth" = "2" ]; then return 0; fi
+        if [ "$want" = "degraded" ] && [ "$depth" = "12" ]; then return 0; fi
+        ;;
+    esac
+    sleep 0.1
+  done
+  echo "mock failed to start or serves the wrong content (scenario: $want, queue depth: ${depth:-n/a}, code: ${code:-n/a})" >&2
   exit 1
 }
 
@@ -73,7 +111,7 @@ run_scenario() {
   local log
   log=$(mktemp)
   JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" timeout 20 qs -p "$E2E_DIR" >"$log" 2>&1 || true
-  kill "$MOCK_PID" 2>/dev/null || true
+  kill_wait "$MOCK_PID"
   MOCK_PID=""
 
   echo "--- $scenario qs log:" >&2
@@ -182,10 +220,10 @@ run_ipc_phase() {
   open=$(qs ipc --pid "$QS_PID" call jenkins-health open 2>&1 || true)
   close=$(qs ipc --pid "$QS_PID" call jenkins-health close 2>&1 || true)
   toggle=$(qs ipc --pid "$QS_PID" call jenkins-health toggle 2>&1 || true)
-  kill "$QS_PID" 2>/dev/null || true
+  kill_wait "$QS_PID"
   wait "$QS_PID" 2>/dev/null || true
   QS_PID=""
-  kill "$MOCK_PID" 2>/dev/null || true
+  kill_wait "$MOCK_PID"
   MOCK_PID=""
 
   printf 'status:  %s\nrefresh: %s\nopen:    %s\nclose:   %s\ntoggle:  %s\n' "$status" "$refresh" "$open" "$close" "$toggle" >&2
@@ -220,7 +258,7 @@ run_widget_phase() {
   opened=$(qs ipc --pid "$QS_PID" call jenkins-health open 2>&1 || true)
   wait "$QS_PID" || true
   QS_PID=""
-  kill "$MOCK_PID" 2>/dev/null || true
+  kill_wait "$MOCK_PID"
   MOCK_PID=""
 
   echo "--- widget phase log:" >&2
@@ -287,10 +325,10 @@ run_render_phase() {
   if [ -n "$geo" ] && [ "$geo" != "null" ]; then
     grim -g "$geo" "$out_png" 2>>"$TOKEN_DIR/render.log" || true
   fi
-  kill "$QS_PID" 2>/dev/null || true
+  kill_wait "$QS_PID"
   wait "$QS_PID" 2>/dev/null || true
   QS_PID=""
-  kill "$MOCK_PID" 2>/dev/null || true
+  kill_wait "$MOCK_PID"
   MOCK_PID=""
 
   echo "--- render phase $scenario (geo='$geo'):" >&2
@@ -319,15 +357,21 @@ run_render_both_phases() {
   fi
   run_render_phase healthy "$TOKEN_DIR/render-healthy.png"
   run_render_phase degraded "$TOKEN_DIR/render-degraded.png"
+  run_render_phase outage "$TOKEN_DIR/render-outage.png"
   if [ "$FAILED" = 1 ]; then
     return
   fi
-  if cmp -s "$TOKEN_DIR/render-healthy.png" "$TOKEN_DIR/render-degraded.png"; then
-    echo "FAIL: render phases — healthy and degraded captures are identical"
-    FAILED=1
-    return
-  fi
-  echo "PASS: render phases differ between states (level-dependent rendering confirmed)"
+  local a b
+  for a in healthy degraded outage; do
+    for b in healthy degraded outage; do
+      if [ "$a" \< "$b" ] && cmp -s "$TOKEN_DIR/render-$a.png" "$TOKEN_DIR/render-$b.png"; then
+        echo "FAIL: render phases — $a and $b captures are identical"
+        FAILED=1
+        return
+      fi
+    done
+  done
+  echo "PASS: render phases differ across all three states (level-dependent rendering confirmed)"
 }
 
 # ---- phase 6: safe actions ---------------------------------------------------
@@ -387,7 +431,7 @@ PYEOF
 
   JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
     qs -p "$E2E_DIR/action-shell.qml" >"$TOKEN_DIR/action.log" 2>&1 || true
-  kill "$ACTION_PID" 2>/dev/null || true
+  kill_wait "$ACTION_PID"
   ACTION_PID=""
 
   echo "--- action phase:" >&2
@@ -438,7 +482,7 @@ run_lifecycle_phase() {
   start_mock healthy
   JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
     qs -p "$E2E_DIR/lifecycle-shell.qml" >"$TOKEN_DIR/lifecycle.log" 2>&1 || true
-  kill "$MOCK_PID" 2>/dev/null || true
+  kill_wait "$MOCK_PID"
   MOCK_PID=""
 
   echo "--- lifecycle phase:" >&2
@@ -464,9 +508,95 @@ run_lifecycle_phase() {
   fi
 }
 
+# ---- phase 8: auth failures ---------------------------------------------------
+# Proves the failure-classification branches execute in the LIVE service:
+# 401/403 → noauth with a credentials message, 3xx → unconfigured with a
+# URL-scheme hint, and a missing token file → noauth via the netrc path.
+# Inline servers (never the frozen mock) on port 28890.
+
+run_auth_case() {
+  # $1 = label, $2 = expected state, $3 = jq expression over the dump,
+  # $4 = server status to serve on /api/json ("" = no server)
+  local label="$1" expect_state="$2" expect_jq="$3" status="$4"
+  local srv="" pid=""
+  if [ -n "$status" ]; then
+    srv=$(mktemp)
+    cat > "$srv" <<PYEOF
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+status = int(sys.argv[2])
+
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # Real Jenkins redirects serve an HTML page, not JSON — a JSON
+        # body would parse as a valid (empty) controller and the service
+        # would report healthy instead of classifying the redirect.
+        body = b'<html><head>302 Found</head></html>' if status in (301, 302, 307, 308) else b'{}'
+        self.send_response(status)
+        if status in (301, 302, 307, 308):
+            self.send_header("Location", "https://ci.example.com/jenkins")
+        self.send_header("X-Jenkins", "2.440.3")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PYEOF
+    python3 "$srv" 28890 "$status" >/dev/null 2>&1 &
+    pid=$!
+    local i
+    for i in $(seq 1 30); do
+      curl -s -o /dev/null "http://127.0.0.1:28890/api/json" && break
+      sleep 0.1
+    done
+  fi
+
+  local token_arg="$TOKEN_DIR/token"
+  if [ "$label" = "missing-token" ]; then
+    token_arg="$TOKEN_DIR/does-not-exist"
+  fi
+
+  JH_E2E_TOKEN_FILE="$token_arg" \
+    qs -p "$E2E_DIR/auth-shell.qml" >"$TOKEN_DIR/auth-$label.log" 2>&1 || true
+  kill_wait "$pid"
+  [ -n "$srv" ] && rm -f "$srv"
+
+  echo "--- auth case $label:" >&2
+  cat "$TOKEN_DIR/auth-$label.log" >&2
+
+  local x
+  x=$(grep -o 'JH-E2E-X {.*}' "$TOKEN_DIR/auth-$label.log" | tail -n1 || true)
+  if [ -z "$x" ]; then
+    echo "FAIL: auth $label — no dump"
+    FAILED=1
+    return
+  fi
+  if printf '%s' "${x#JH-E2E-X }" | jq -e "(.state == \"$expect_state\") and ($expect_jq)" >/dev/null 2>&1; then
+    echo "PASS: auth $label → $expect_state"
+  else
+    echo "FAIL: auth $label — expected $expect_state: $x"
+    FAILED=1
+  fi
+}
+
+run_auth_phase() {
+  run_auth_case reject-403 noauth '(.statusMessage | contains("HTTP 403"))' 403
+  run_auth_case reject-401 noauth '(.statusMessage | contains("HTTP 401"))' 401
+  run_auth_case redirect-302 unconfigured '(.statusMessage | contains("redirected"))' 302
+  run_auth_case missing-token noauth '(.statusMessage | contains("token"))' ""
+}
+
 run_render_both_phases
 run_action_phase
 run_lifecycle_phase
+run_auth_phase
+
 if [ "$FAILED" = 1 ]; then
   echo "E2E-FAILED"
   exit 1
