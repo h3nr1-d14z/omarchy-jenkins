@@ -738,6 +738,15 @@ Item {
             }
           }
         }
+
+        Text {
+          visible: root.ctrl && root.ctrl.failures === 0
+            && root.ctrl.unstable === 0 && root.ctrl.building === 0
+          text: "no failing, unstable, or building jobs"
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
       }
 
       // == activity tab

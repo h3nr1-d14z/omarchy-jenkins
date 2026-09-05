@@ -55,6 +55,7 @@ immediately.
 | `queueBacklogThreshold` | `10` | Queue depth above which a backlog is flagged. |
 | `diskWarnGb` / `diskCriticalGb` | `25` / `10` | Node free-disk thresholds (GB). |
 | `responseTimeWarnMs` | `1000` | Node response-time threshold. |
+| `failurePenaltyCap` | `0` | Cap on the failing-jobs score penalty (0 = uncapped). |
 | `notifyController`, `notifyNodes`, `notifyFailures`, `notifyQueue`, `notifyMaintenance` | `On` | Per-category notification toggles. |
 
 ## IPC
