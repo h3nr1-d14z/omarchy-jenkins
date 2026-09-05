@@ -54,7 +54,7 @@ BarWidget {
   Component.onCompleted: attachService()
   onSettingsChanged: pushConfig()
   onServiceChanged: attachService()
-  Component.onDestroyed: if (service && typeof service.unregisterWidget === "function") {
+  Component.onDestruction: if (service && typeof service.unregisterWidget === "function") {
     service.unregisterWidget(root)
   }
 
