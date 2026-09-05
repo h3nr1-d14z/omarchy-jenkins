@@ -220,7 +220,11 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
   var diskWarnGb = jhNum(cfg.diskWarnGb, 25)
   var diskCriticalGb = jhNum(cfg.diskCriticalGb, 10)
   var rttWarnMs = jhNum(cfg.responseTimeWarnMs, 1000)
-
+  // Failures penalty cap (0 = uncapped). Controllers with a large job
+  // catalog can carry a habitual red minority (e.g. 41 of 774 = 5%); the
+  // linear 6×red penalty floors the score at 0 and red becomes the
+ // permanent baseline, hiding real regressions. A cap keeps the signal.
+  var failCap = jhNum(cfg.failurePenaltyCap, 0)
   var parsedNodes = jhIsObject(nodes) && Array.isArray(nodes.nodes)
     ? nodes : { total: 0, online: 0, offline: 0, temporarilyOffline: 0, nodes: [] }
   var parsedQueue = jhIsObject(queue) ? queue : { depth: 0, stuck: 0, items: [] }
@@ -350,7 +354,12 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
 
   // --- job assessment
   if (redCount > 0) {
-    score -= 6 * redCount
+    var failPenalty = 6 * redCount
+    if (failCap > 0 && failPenalty > failCap) {
+      failPenalty = failCap
+      // The reason keeps the true count; the score only is capped.
+    }
+    score -= failPenalty
     var failMsg = redCount + (redCount === 1 ? " job failing" : " jobs failing")
     if (failingNames.length > 0) failMsg += " (" + failingNames.join(", ") + ")"
     overallReasons.push(failMsg)

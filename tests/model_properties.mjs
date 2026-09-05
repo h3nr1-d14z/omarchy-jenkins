@@ -488,6 +488,34 @@ for (let iter = 0; iter < 300; iter++) {
   ok(t.jobs.some(j => j.name === 'Deep/mid' && j.color === ''), 'N7 truncated folder neutral color', '');
   ok(t.jobs.filter(j => j.color === 'red').length === 1, 'N7 sibling leaf unaffected', '');
 }
+
+// C*: failurePenaltyCap semantics. Default 0/absent = uncapped (the
+// frozen fixtures depend on that); a positive cap bounds only the score
+// subtraction — counts, names, and reasons keep the truth.
+{
+  const api = (nRed) => ({ mode: 'NORMAL', quietingDown: false,
+    jobs: Array.from({ length: nRed }, (_, i) => ({ name: 'r' + i, color: 'red' })) });
+  const mk = (nRed, cap) => Model.assess(
+    Model.parseController(api(nRed), '1.0'),
+    Model.parseNodes({ computer: [] }),
+    Model.parseQueue({ items: [] }),
+    Model.parsePlugins({ plugins: [] }),
+    Model.parseUpdateCenter({}),
+    Object.assign({ queueBacklogThreshold: 10, diskWarnGb: 25, diskCriticalGb: 10, responseTimeWarnMs: 1000 },
+      cap !== undefined ? { failurePenaltyCap: cap } : {}),
+    0);
+  const un5 = mk(5);          // penalty 30
+  ok(mk(5, 60).overall.score === un5.overall.score, 'C1 cap above penalty = uncapped', '');
+  ok(mk(5, 0).overall.score === un5.overall.score, 'C2 explicit 0 = uncapped', '');
+  ok(mk(5, 12).overall.score === 88, 'C3 capped penalty applied', 'got ' + mk(5, 12).overall.score);
+  ok(mk(50, 10).overall.score === 90, 'C4 many reds with small cap', 'got ' + mk(50, 10).overall.score);
+  ok(mk(50).overall.score === 0, 'C4b uncapped many reds still floor 0', '');
+  const capped = mk(50, 10);
+  ok(capped.controller.failures === 50 && capped.controller.failingNames.length === 50,
+    'C5 counts/names keep the truth under cap', '');
+  ok(capped.overall.reasons.some(r => r.indexOf('50 jobs failing') === 0),
+    'C5b reason keeps the true count', JSON.stringify(capped.overall.reasons));
+}
 // ------------------------------------------------------------------- summary
 
 console.log(`property sweep: ${N} scenarios, ${checks} checks`);

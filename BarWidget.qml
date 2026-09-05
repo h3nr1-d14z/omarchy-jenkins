@@ -35,6 +35,7 @@ BarWidget {
       diskWarnGb: setting("diskWarnGb", 25),
       diskCriticalGb: setting("diskCriticalGb", 10),
       responseTimeWarnMs: setting("responseTimeWarnMs", 1000),
+      failurePenaltyCap: setting("failurePenaltyCap", 0),
       notifyController: setting("notifyController", "On") !== "Off",
       notifyNodes: setting("notifyNodes", "On") !== "Off",
       notifyFailures: setting("notifyFailures", "On") !== "Off",

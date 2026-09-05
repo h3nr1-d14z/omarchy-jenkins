@@ -439,15 +439,6 @@ Item {
             }
           }
         }
-
-        Text {
-          visible: root.ctrl && root.ctrl.failures === 0 && root.ctrl.unstable === 0
-            && root.ctrl.building === 0
-          text: "no failing, unstable, or building jobs"
-          color: Color.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-        }
       }
 
       // == queue tab
@@ -478,13 +469,39 @@ Item {
             width: parent.width
             height: Style.space(24)
 
-            Text {
-              id: queueName
+            // Stuck marker: a red STUCK badge instead of a "!" prefix —
+            // scannable at a glance. Zero-width when not stuck so the
+            // name anchors cleanly in both states.
+            Rectangle {
+              id: stuckBadge
+              visible: modelData.stuck
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
-              width: parent.width - queueMeta.width - queueAction.width - Style.space(24)
+              width: visible ? stuckLabel.implicitWidth + Style.space(6) : 0
+              height: stuckLabel.implicitHeight + Style.space(2)
+              radius: Style.cornerRadius
+              color: Color.urgent
+
+              Text {
+                id: stuckLabel
+                anchors.centerIn: parent
+                text: "STUCK"
+                color: Color.popups.text
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+              }
+            }
+
+            Text {
+              id: queueName
+              anchors.left: stuckBadge.right
+              anchors.leftMargin: stuckBadge.visible ? Style.space(6) : 0
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - queueMeta.width - queueAction.width
+                - stuckBadge.width - Style.space(24)
+                - (stuckBadge.visible ? Style.space(6) : 0)
               elide: Text.ElideRight
-              text: (modelData.stuck ? "! " : "") + (modelData.name || "item " + modelData.id)
+              text: (modelData.name || "item " + modelData.id)
                 + (modelData.why ? " — " + modelData.why : "")
               color: modelData.stuck ? Color.urgent : root.foreground
               font.family: Style.font.family

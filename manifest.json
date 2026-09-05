@@ -38,6 +38,7 @@
       {"key": "diskWarnGb", "type": "integer", "label": "Disk warn (GB free)", "min": 1, "max": 2000, "defaultValue": 25, "description": "Node free disk space below this warns."},
       {"key": "diskCriticalGb", "type": "integer", "label": "Disk critical (GB free)", "min": 0, "max": 2000, "defaultValue": 10, "description": "Node free disk space below this is critical."},
       {"key": "responseTimeWarnMs", "type": "integer", "label": "Response time warn (ms)", "min": 100, "max": 60000, "step": 100, "defaultValue": 1000, "description": "Node response time above this warns."},
+      {"key": "failurePenaltyCap", "type": "integer", "label": "Failure penalty cap", "min": 0, "max": 100, "step": 1, "defaultValue": 0, "description": "Max score points subtracted for failing jobs (0 = uncapped). Set when a large catalog carries a habitual red minority."},
       {"key": "notifyController", "type": "enum", "label": "Controller notifications", "options": ["On", "Off"], "defaultValue": "On", "description": "Notify when the controller goes down or comes back up."},
       {"key": "notifyNodes", "type": "enum", "label": "Node notifications", "options": ["On", "Off"], "defaultValue": "On", "description": "Notify when nodes go offline or come back."},
       {"key": "notifyFailures", "type": "enum", "label": "Failure notifications", "options": ["On", "Off"], "defaultValue": "On", "description": "Notify on new job failures and recoveries."},
