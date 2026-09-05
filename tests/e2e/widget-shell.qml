@@ -83,15 +83,48 @@ ShellRoot {
     }
   }
 
+  // Relay proof: dump right after the bash-side IPC open (4.5s), BEFORE
+  // the dismissal cycle below toggles the state again.
   Timer {
-    interval: 6500
+    interval: 5500
     running: true
     repeat: false
     onTriggered: {
       console.log("JH-E2E-W2 " + JSON.stringify({
         popupOpen: widget.popupOpen
       }))
-      Qt.quit()
     }
+  }
+
+  // open:popupOpen binding intact. The original bug: the card assigned its
+  // own open directly, the binding broke, and the chip went dead after the
+  // first outside-click dismissal.
+  Timer {
+    interval: 7500
+    running: true
+    repeat: false
+    onTriggered: {
+      var card = widget.popupCard
+      var sawOpen = false, closedCleanly = false, reopened = false
+      if (card) {
+        widget.openPopup()
+        sawOpen = card.open === true
+        card.close() // exactly what HyprlandFocusGrab.onCleared does
+        closedCleanly = widget.popupOpen === false && card.open === false
+        widget.openPopup() // the user pressing the chip again
+        reopened = card.open === true
+        widget.closePopup()
+      }
+      console.log("JH-E2E-W3 " + JSON.stringify({
+        sawOpen: sawOpen, closedCleanly: closedCleanly, reopened: reopened
+      }))
+    }
+  }
+
+  Timer {
+    interval: 9500
+    running: true
+    repeat: false
+    onTriggered: Qt.quit()
   }
 }

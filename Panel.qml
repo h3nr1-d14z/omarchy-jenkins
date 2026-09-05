@@ -3,15 +3,24 @@ import qs.Ui
 import qs.Commons
 
 // Jenkins Health detail panel, hosted inside the BarWidget's PopupCard.
-// Shows the latest assessment (controller, nodes, queue, jobs, maintenance)
-// and offers the safe actions: quiet-down toggle, cancel a queue item,
-// node online/offline. All data comes from the shared service instance.
+// Shows the latest assessment and offers the safe actions: quiet-down
+// toggle, cancel a queue item, node online/offline. All data comes from
+// the shared service instance.
+//
+// Layout: fixed header (identity + level chip), a tab bar, and a single
+// scrollable content area — only the active tab's content sizes the
+// popup, so a controller with dozens of failing jobs or nodes cannot
+// overflow the screen; each list scrolls instead. The footer (refresh +
+// status/action feedback) stays pinned.
 
 Item {
   id: root
 
   property var service: null
   property var bar: null
+
+  // Active tab: "overview" | "nodes" | "jobs" | "queue".
+  property string activeTab: "overview"
 
   readonly property var snap: service ? service.snapshot : null
   readonly property var ctrl: snap && snap.controller ? snap.controller : null
@@ -27,8 +36,6 @@ Item {
   readonly property color levelColor: state === "critical" ? Color.urgent
     : state === "warn" ? Color.accent
     : state === "ok" ? foreground : Color.muted
-
-  implicitHeight: flick.contentHeight
 
   function fmtAge(sec) {
     if (sec < 60) return sec + "s"
@@ -51,123 +58,246 @@ Item {
       + " · " + (n.executorsTotal - n.executorsIdle) + "/" + n.executorsTotal
   }
 
+  // The popup sizes to the ACTIVE tab's content (capped to the screen by
+  // PopupCard.fittedContentHeight); inactive tabs stay instantiated so
+  // switching is instant and state survives.
+  function activeContentHeight() {
+    if (activeTab === "nodes") return nodesCol.implicitHeight
+    if (activeTab === "jobs") return jobsCol.implicitHeight
+    if (activeTab === "queue") return queueCol.implicitHeight
+    return overviewCol.implicitHeight
+  }
+
+  implicitHeight: headerRow.height + footerRow.height + Style.space(20)
+    + (snap ? tabBar.height + Style.space(10) + activeContentHeight()
+      : setupHint.implicitHeight)
+
+  // ---- fixed header
+
+  Item {
+    id: headerRow
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+    height: Math.max(headerLogo.height, headerTexts.implicitHeight, levelChip.height)
+
+    Image {
+      id: headerLogo
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      source: "jenkins.svg"
+      // official Jenkins logo (CC BY-SA 3.0); rasterized 2x for crispness
+      sourceSize.height: 40
+      width: Style.space(22)
+      height: Style.space(22)
+      fillMode: Image.PreserveAspectFit
+      smooth: true
+    }
+
+    Column {
+      id: headerTexts
+      anchors.left: headerLogo.right
+      anchors.leftMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(2)
+
+      Text {
+        // Show the version only when it is a real one; during an
+        // outage there is no version to show and a bare "Jenkins"
+        // reads far better than "Jenkins ?".
+        text: root.ctrl && root.ctrl.version && root.ctrl.version !== "Unknown"
+          ? "Jenkins " + root.ctrl.version : "Jenkins"
+        color: root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.title
+      }
+      Text {
+        text: root.service && root.service.lastUpdated
+          ? "updated " + root.service.lastUpdated
+          : (root.service && root.service.statusMessage ? root.service.statusMessage : "connecting…")
+        color: Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+      }
+    }
+
+    Rectangle {
+      id: levelChip
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      radius: Style.cornerRadius
+      border.color: root.levelColor
+      border.width: 1
+      width: levelChipText.implicitWidth + Style.space(10)
+      height: levelChipText.implicitHeight + Style.space(4)
+
+      Text {
+        id: levelChipText
+        anchors.centerIn: parent
+        text: root.overall ? root.overall.level + " · " + root.overall.score
+          : (root.state === "unconfigured" ? "setup" : root.state === "noauth" ? "no token" : "…")
+        color: root.levelColor
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+      }
+    }
+  }
+
+  // ---- setup hint before the first snapshot
+
+  Text {
+    id: setupHint
+    visible: !root.snap
+    anchors.top: headerRow.bottom
+    anchors.topMargin: Style.space(8)
+    width: parent.width
+    wrapMode: Text.Wrap
+    color: Color.muted
+    font.family: Style.font.family
+    font.pixelSize: Style.font.bodySmall
+    text: root.service && root.service.statusMessage
+      ? root.service.statusMessage
+      : "Set jenkinsUrl and jenkinsUser in the widget settings, then create the token file (see README)."
+  }
+
+  // ---- tab bar
+
+  Row {
+    id: tabBar
+    visible: !!root.snap
+    anchors.top: headerRow.bottom
+    anchors.topMargin: Style.space(8)
+    anchors.left: parent.left
+    spacing: Style.space(4)
+
+    Button {
+      text: "Overview"
+      fontSize: Style.font.bodySmall
+      selected: root.activeTab === "overview"
+      onClicked: root.activeTab = "overview"
+    }
+
+    Button {
+      text: "Nodes" + (root.nodes.length > 0 ? " · " + root.nodes.length : "")
+      fontSize: Style.font.bodySmall
+      selected: root.activeTab === "nodes"
+      onClicked: root.activeTab = "nodes"
+    }
+
+    Button {
+      text: "Jobs" + (root.ctrl && root.ctrl.failures > 0 ? " · " + root.ctrl.failures : "")
+      fontSize: Style.font.bodySmall
+      foreground: root.ctrl && root.ctrl.failures > 0 ? Color.urgent : Color.foreground
+      selected: root.activeTab === "jobs"
+      onClicked: root.activeTab = "jobs"
+    }
+
+    Button {
+      text: "Queue" + (root.queue && root.queue.depth > 0 ? " · " + root.queue.depth : "")
+      fontSize: Style.font.bodySmall
+      selected: root.activeTab === "queue"
+      onClicked: root.activeTab = "queue"
+    }
+  }
+
+  // ---- scrollable tab content
+
   Flickable {
     id: flick
-    anchors.fill: parent
+    visible: !!root.snap
+    anchors.top: tabBar.bottom
+    anchors.topMargin: Style.space(6)
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: footerRow.top
+    anchors.bottomMargin: Style.space(4)
     clip: true
     boundsBehavior: Flickable.StopAtBounds
-    contentHeight: column.implicitHeight + Style.space(4)
+    contentHeight: contentCol.implicitHeight + Style.space(4)
     interactive: contentHeight > height
 
     Column {
-      id: column
+      id: contentCol
       width: flick.width
       spacing: Style.space(8)
 
-      // ---- header
-      Item {
-        width: parent.width
-        height: Math.max(headerGlyph.height, headerTexts.implicitHeight, levelChip.height)
+      // == overview tab: attention summary + maintenance
 
-        Text {
-          id: headerGlyph
-          anchors.left: parent.left
-          anchors.verticalCenter: parent.verticalCenter
-          text: "󰓅"
-          color: root.levelColor
-          font.family: Style.font.family
-          font.pixelSize: Style.font.title
+      Column {
+        id: overviewCol
+        visible: root.activeTab === "overview"
+        width: parent.width
+        spacing: Style.space(8)
+
+        Column {
+          visible: !!root.overall && root.overall.reasons.length > 0
+          width: parent.width
+          spacing: Style.space(2)
+
+          PanelSectionHeader { text: "Attention" }
+
+          Repeater {
+            model: root.overall && root.overall.reasons ? root.overall.reasons : []
+
+            Text {
+              width: parent.width
+              wrapMode: Text.WordWrap
+              elide: Text.ElideRight
+              maximumLineCount: 2
+              text: "• " + modelData
+              color: root.levelColor === Color.muted ? Color.accent : root.levelColor
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
         }
 
         Column {
-          id: headerTexts
-          anchors.left: headerGlyph.right
-          anchors.leftMargin: Style.space(8)
-          anchors.verticalCenter: parent.verticalCenter
-          spacing: Style.space(2)
+          visible: !!root.maintenance
+          width: parent.width
+          spacing: Style.space(4)
+
+          PanelSectionHeader { text: "Maintenance" }
 
           Text {
-            // Show the version only when it is a real one; during an
-            // outage there is no version to show and a bare "Jenkins"
-            // reads far better than "Jenkins ?".
-            text: root.ctrl && root.ctrl.version && root.ctrl.version !== "Unknown"
-              ? "Jenkins " + root.ctrl.version : "Jenkins"
-            color: root.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.title
-          }
-          Text {
-            text: root.service && root.service.lastUpdated
-              ? "updated " + root.service.lastUpdated
-              : (root.service && root.service.statusMessage ? root.service.statusMessage : "connecting…")
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: root.maintenance
+              ? (root.maintenance.quietingDown ? "quiet-down active\n" : "")
+                + root.maintenance.updatesAvailable + " plugin updates"
+                + (root.maintenance.restartRequired ? " · restart required" : "")
+              : ""
             color: Color.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
           }
-        }
 
-        Rectangle {
-          id: levelChip
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          radius: Style.cornerRadius
-          border.color: root.levelColor
-          border.width: 1
-          width: levelChipText.implicitWidth + Style.space(10)
-          height: levelChipText.implicitHeight + Style.space(4)
-
-          Text {
-            id: levelChipText
-            anchors.centerIn: parent
-            text: root.overall ? root.overall.level + " · " + root.overall.score
-              : (root.state === "unconfigured" ? "setup" : root.state === "noauth" ? "no token" : "…")
-            color: root.levelColor
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
+          Button {
+            text: root.maintenance && root.maintenance.quietingDown
+              ? "Cancel quiet-down" : "Quiet down"
+            enabled: root.actionsEnabled
+            onClicked: if (root.service) {
+              root.service.runAction(
+                root.maintenance && root.maintenance.quietingDown
+                  ? "cancelQuietDown" : "quietDown", null)
+            }
           }
         }
-      }
 
-      // ---- setup hint before the first snapshot
-      Text {
-        visible: !root.snap
-        width: parent.width
-        wrapMode: Text.Wrap
-        color: Color.muted
-        font.family: Style.font.family
-        font.pixelSize: Style.font.bodySmall
-        text: root.service && root.service.statusMessage
-          ? root.service.statusMessage
-          : "Set jenkinsUrl and jenkinsUser in the widget settings, then create the token file (see README)."
-      }
-
-      // ---- attention reasons
-      Column {
-        visible: !!root.snap && !!root.overall && root.overall.reasons.length > 0
-        width: parent.width
-        spacing: Style.space(2)
-
-        PanelSectionHeader { text: "Attention" }
-
-        Repeater {
-          model: root.overall && root.overall.reasons ? root.overall.reasons : []
-
-          Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            elide: Text.ElideRight
-            maximumLineCount: 2
-            text: "• " + modelData
-            color: root.levelColor === Color.muted ? Color.accent : root.levelColor
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-          }
+        Text {
+          visible: !root.overall || root.overall.reasons.length === 0
+          text: "All clear — nothing needs attention."
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
         }
       }
 
-      // ---- nodes
+      // == nodes tab
+
       Column {
-        visible: !!root.snap
+        id: nodesCol
+        visible: root.activeTab === "nodes"
         width: parent.width
         spacing: Style.space(2)
 
@@ -228,9 +358,103 @@ Item {
         }
       }
 
-      // ---- queue
+      // == jobs tab
+
       Column {
-        visible: !!root.snap && !!root.queue
+        id: jobsCol
+        visible: root.activeTab === "jobs"
+        width: parent.width
+        spacing: Style.space(2)
+
+        PanelSectionHeader { text: "Jobs" }
+
+        Text {
+          width: parent.width
+          wrapMode: Text.Wrap
+          text: root.ctrl
+            ? root.ctrl.failures + " failing · " + root.ctrl.unstable + " unstable · "
+              + root.ctrl.building + " building"
+            : ""
+          color: root.ctrl && root.ctrl.failures > 0 ? Color.urgent : Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        Repeater {
+          model: root.ctrl && root.ctrl.failingNames ? root.ctrl.failingNames : []
+
+          Item {
+            width: parent.width
+            height: Style.space(22)
+
+            Text {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - Style.space(8)
+              elide: Text.ElideRight
+              text: "✗ " + modelData
+              color: Color.urgent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+        }
+
+        Repeater {
+          model: root.ctrl && root.ctrl.unstableNames ? root.ctrl.unstableNames : []
+
+          Item {
+            width: parent.width
+            height: Style.space(22)
+
+            Text {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - Style.space(8)
+              elide: Text.ElideRight
+              text: "△ " + modelData
+              color: Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+        }
+
+        Repeater {
+          model: root.ctrl && root.ctrl.buildingNames ? root.ctrl.buildingNames : []
+
+          Item {
+            width: parent.width
+            height: Style.space(22)
+
+            Text {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - Style.space(8)
+              elide: Text.ElideRight
+              text: "↻ " + modelData
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+        }
+
+        Text {
+          visible: root.ctrl && root.ctrl.failures === 0 && root.ctrl.unstable === 0
+            && root.ctrl.building === 0
+          text: "no failing, unstable, or building jobs"
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+
+      // == queue tab
+
+      Column {
+        id: queueCol
+        visible: root.activeTab === "queue"
         width: parent.width
         spacing: Style.space(2)
 
@@ -248,7 +472,7 @@ Item {
         }
 
         Repeater {
-          model: root.queueItems.length > 6 ? root.queueItems.slice(0, 6) : root.queueItems
+          model: root.queueItems.length > 30 ? root.queueItems.slice(0, 30) : root.queueItems
 
           Item {
             width: parent.width
@@ -291,97 +515,53 @@ Item {
         }
 
         Text {
-          visible: root.queueItems.length > 6
-          text: "+ " + (root.queueItems.length - 6) + " more…"
-          color: Color.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-        }
-      }
-
-      // ---- jobs
-      Column {
-        visible: !!root.ctrl
-        width: parent.width
-        spacing: Style.space(2)
-
-        PanelSectionHeader { text: "Jobs" }
-
-        Text {
-          width: parent.width
-          wrapMode: Text.Wrap
-          text: root.ctrl
-            ? root.ctrl.failures + " failing · " + root.ctrl.unstable + " unstable · "
-              + root.ctrl.building + " building"
-              + (root.ctrl.failingNames && root.ctrl.failingNames.length > 0
-                ? "\n" + root.ctrl.failingNames.join(", ") : "")
-            : ""
-          color: root.ctrl && root.ctrl.failures > 0 ? Color.urgent : Color.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-        }
-      }
-
-      // ---- maintenance + actions
-      Column {
-        visible: !!root.snap && !!root.maintenance
-        width: parent.width
-        spacing: Style.space(4)
-
-        PanelSectionHeader { text: "Maintenance" }
-
-        Text {
-          width: parent.width
-          wrapMode: Text.Wrap
-          text: root.maintenance
-            ? (root.maintenance.quietingDown ? "quiet-down active\n" : "")
-              + root.maintenance.updatesAvailable + " plugin updates"
-              + (root.maintenance.restartRequired ? " · restart required" : "")
-            : ""
+          visible: root.queueItems.length > 30
+          text: "+ " + (root.queueItems.length - 30) + " more…"
           color: Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
         }
 
-        Button {
-          text: root.maintenance && root.maintenance.quietingDown
-            ? "Cancel quiet-down" : "Quiet down"
-          enabled: root.actionsEnabled
-          onClicked: if (root.service) {
-            root.service.runAction(
-              root.maintenance && root.maintenance.quietingDown
-                ? "cancelQuietDown" : "quietDown", null)
-          }
-        }
-      }
-
-      // ---- footer
-      Item {
-        width: parent.width
-        height: refreshButton.height
-
-        Button {
-          id: refreshButton
-          anchors.left: parent.left
-          text: root.service && root.service.busy ? "Refreshing…" : "Refresh"
-          enabled: !!root.service && !root.service.busy
-          onClicked: if (root.service) root.service.refresh()
-        }
-
         Text {
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          // State messages (config/auth problems) take precedence; action
-          // feedback ("action sent") persists until the next action or
-          // reconfiguration, surviving the auto-refresh poll.
-          visible: root.service && (root.service.statusMessage || root.service.actionMessage)
-          text: root.service
-            ? (root.service.statusMessage || root.service.actionMessage) : ""
+          visible: root.queueItems.length === 0
+          text: "queue is empty"
           color: Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
         }
       }
+    }
+  }
+
+  // ---- pinned footer
+
+  Item {
+    id: footerRow
+    anchors.bottom: parent.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    height: refreshButton.height
+
+    Button {
+      id: refreshButton
+      anchors.left: parent.left
+      text: root.service && root.service.busy ? "Refreshing…" : "Refresh"
+      enabled: !!root.service && !root.service.busy
+      onClicked: if (root.service) root.service.refresh()
+    }
+
+    Text {
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      // State messages (config/auth problems) take precedence; action
+      // feedback ("action sent") persists until the next action or
+      // reconfiguration, surviving the auto-refresh poll.
+      visible: root.service && (root.service.statusMessage || root.service.actionMessage)
+      text: root.service
+        ? (root.service.statusMessage || root.service.actionMessage) : ""
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
     }
   }
 }

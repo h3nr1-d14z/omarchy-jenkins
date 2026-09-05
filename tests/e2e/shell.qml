@@ -66,7 +66,7 @@ ShellRoot {
         queueDepth: snap && snap.queue ? snap.queue.depth : -1,
         failing: snap && snap.controller ? snap.controller.failures : -1,
         firstFailing: snap && snap.controller && snap.controller.failingNames
-          && snap.controller.failingNames.length > 0 ? snap.controller.failingNames[0] : "",
+          ? (snap.controller.failingNames[0] || "") : "",
         statusMessage: service.statusMessage
       }))
       Qt.quit()

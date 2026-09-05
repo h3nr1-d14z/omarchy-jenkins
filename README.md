@@ -106,6 +106,12 @@ widget registry lifecycle, and screen captures of both the healthy and
 degraded rendered surfaces. It never touches your desktop notification
 daemon, and screenshots capture only the test window.
 
+## Credits
+
+The Jenkins butler logo (`jenkins.svg`) is the official Jenkins mark,
+© 2004 Kohsuke Kawaguchi, licensed CC BY-SA 3.0 — see
+https://www.jenkins.io/artwork/.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

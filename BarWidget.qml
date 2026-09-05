@@ -20,6 +20,9 @@ BarWidget {
   readonly property int score: service ? service.score : 0
   readonly property string version: service ? service.version : ""
   property bool popupOpen: false
+  // Exposed so the E2E can drive PopupCard.close() — the exact call the
+  // outside-click focus grab makes — and assert the chip survives it.
+  readonly property var popupCard: popup
 
   function pushConfig() {
     if (!service || typeof service.applyConfig !== "function") return
@@ -50,6 +53,15 @@ BarWidget {
   function openPopup() { popupOpen = true }
   function closePopup() { popupOpen = false }
   function togglePopup() { popupOpen = !popupOpen }
+
+  // PopupCard delegation contract — REQUIRED. Outside-click dismissal
+  // (HyprlandFocusGrab.onCleared → PopupCard.close()) and the bar's popout
+  // switch (Bar.requestPopout → closeForPopoutSwitch) route through close()
+  // on the owner. Without it PopupCard.close() assigns its own `open`
+  // directly, breaking the open:popupOpen binding — the chip then toggles a
+  // dead property and stops responding to clicks until recreated.
+  function close() { popupOpen = false }
+  function closeForPopoutSwitch() { close() }
 
   Component.onCompleted: attachService()
   onSettingsChanged: pushConfig()
@@ -93,9 +105,38 @@ BarWidget {
     anchors.centerIn: parent
     spacing: Style.space(6)
 
-    Text {
+    Image {
       anchors.verticalCenter: parent.verticalCenter
-      text: "󰓅"
+      // Official Jenkins logo (CC BY-SA 3.0, bundled as jenkins.svg).
+      // Multicolor, so it carries the plugin identity while the score
+      // text beside it carries the level color.
+      source: "jenkins.svg"
+      sourceSize.height: 36
+      width: Style.space(16)
+      height: Style.space(16)
+      fillMode: Image.PreserveAspectFit
+      smooth: true
+    }
+
+
+    // Vertical bars have no room for the label and the logo is multicolor,
+    // so a small level-colored dot carries the state there.
+    Rectangle {
+      visible: root.vertical
+      width: Style.space(4)
+      height: Style.space(4)
+      radius: Style.space(2)
+      color: root.statusColor
+    }
+
+    Text {
+      id: chipText
+      anchors.verticalCenter: parent.verticalCenter
+      // Horizontal bars: the score text carries the level color (the
+      // logo is multicolor); vertical bars get the dot above, and the
+      // tooltip carries the detail.
+      visible: !root.vertical
+      text: root.chipText
       color: root.statusColor
       font.family: root.bar ? root.bar.fontFamily : Style.font.family
       font.pixelSize: Style.font.body
@@ -103,18 +144,6 @@ BarWidget {
         enabled: !root.bar || root.bar.foregroundAnimationEnabled
         ColorAnimation { duration: 160 }
       }
-    }
-
-    Text {
-      id: chipText
-      anchors.verticalCenter: parent.verticalCenter
-      // Vertical bars have no room for the label; the colored gauge
-      // glyph carries the level, the tooltip carries the detail.
-      visible: !root.vertical
-      text: root.chipText
-      color: root.statusColor
-      font.family: root.bar ? root.bar.fontFamily : Style.font.family
-      font.pixelSize: Style.font.body
     }
   }
 

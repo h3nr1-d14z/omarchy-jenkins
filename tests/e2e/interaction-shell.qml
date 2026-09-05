@@ -4,16 +4,16 @@ import Quickshell.Io
 import "." as Local
 
 // Runtime E2E interaction harness: instantiates the real Panel against a
-// degraded snapshot, then CLICKS its action buttons programmatically
-// (signals are emittable in QML) and asserts the resulting POSTs. This
-// closes the last unverified wiring link: button labels ↔ action handlers
-// (a swapped ternary would make "Bring online" perform nodeOffline, and
-// no existing test would catch it — labels are vision-checked, commands
-// are action-phase-checked, but the connection between them is not).
+// degraded snapshot, then CLICKS its tabs and action buttons
+// programmatically (signals are emittable in QML) and asserts the
+// resulting POSTs. This closes the last unverified wiring link: button
+// labels ↔ action handlers (a swapped ternary would make "Bring online"
+// perform nodeOffline, and no other test would catch it). With the tabbed
+// panel it also proves the tab bar routes to the right lists.
 //
 // The driver's server (port 28889) serves the degraded fixtures for GETs
-// and logs POSTs. Clicks fire at 3.0/3.6/4.2s; the dump at 6s reflects
-// the last action's feedback.
+// and logs POSTs. Clicks fire at 3.0/3.6/4.2s (tab first, then the
+// button on that tab); the dump at 6.5s reflects the last action.
 
 ShellRoot {
   id: root
@@ -105,12 +105,27 @@ ShellRoot {
     return false
   }
 
+  // Tab labels carry dynamic counts ("Nodes · 6"), so tabs are matched by
+  // prefix while action buttons keep exact matching.
+  function clickTab(prefix) {
+    var buttons = collectButtons(panel, [])
+    for (var i = 0; i < buttons.length; i++) {
+      if (String(buttons[i].text).indexOf(prefix) === 0) {
+        buttons[i].clicked()
+        return true
+      }
+    }
+    console.log("JH-E2E-I-MISSING ~" + prefix + " (buttons seen: " + buttons.length + ")")
+    return false
+  }
+
   Timer {
-    // First poll lands ~1.5s; the degraded snapshot renders the buttons.
+    // First poll lands ~1.5s; the degraded snapshot renders the tabs.
     interval: 3000
     running: true
     repeat: false
     onTriggered: {
+      clickTab("Nodes")
       clickButtonByText("Bring online")   // agent-03 (offline in degraded)
       clickTimer.restart()
     }
@@ -124,8 +139,10 @@ ShellRoot {
     onTriggered: {
       step += 1
       if (step === 1) {
+        clickTab("Queue")
         clickButtonByText("Cancel")       // first queue item (id 201)
       } else if (step === 2) {
+        clickTab("Overview")
         clickButtonByText("Quiet down")
       } else {
         stop()
@@ -134,14 +151,15 @@ ShellRoot {
   }
 
   Timer {
-    interval: 6000
+    interval: 6500
     running: true
     repeat: false
     onTriggered: {
       console.log("JH-E2E-I " + JSON.stringify({
         actionMessage: service.actionMessage,
         state: service.state,
-        queueDepth: service.snapshot ? service.snapshot.queue.depth : -1
+        queueDepth: service.snapshot ? service.snapshot.queue.depth : -1,
+        activeTab: panel.activeTab
       }))
       Qt.quit()
     }

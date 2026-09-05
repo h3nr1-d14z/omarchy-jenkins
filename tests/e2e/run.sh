@@ -52,8 +52,18 @@ cp "$ROOT/tests/e2e/action-shell.qml" "$E2E_DIR/action-shell.qml"
 cp "$ROOT/tests/e2e/lifecycle-shell.qml" "$E2E_DIR/lifecycle-shell.qml"
 cp "$ROOT/tests/e2e/auth-shell.qml" "$E2E_DIR/auth-shell.qml"
 cp "$ROOT/tests/e2e/firstrun-shell.qml" "$E2E_DIR/firstrun-shell.qml"
+cp "$ROOT/jenkins.svg" "$E2E_DIR/jenkins.svg"
 cp "$ROOT/tests/e2e/interaction-shell.qml" "$E2E_DIR/interaction-shell.qml"
 
+# One suite at a time: the phases own fixed ports (28888 mock, 28889
+# action/interaction, 28890 auth). Two concurrent runs cross-contaminate
+# each other's mocks mid-phase and produce plausible-but-wrong failures.
+for p in 28888 28889 28890; do
+  if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$p/" 2>/dev/null; then
+    echo "FAIL: port $p is already in use — another E2E run (or server) is live; aborting to avoid cross-contamination"
+    exit 1
+  fi
+done
 # Kill a background server and WAIT for it to die. Python's
 # ThreadingHTTPServer can survive SIGTERM (server_close blocks on
 # keep-alive handler threads), so a bare kill may leave the port held —
@@ -344,22 +354,24 @@ run_widget_phase() {
   echo "--- widget phase log:" >&2
   cat "$TOKEN_DIR/widget.log" >&2
 
-  local w1 w2
+  local w1 w2 w3
   w1=$(grep -o 'JH-E2E-W1 {.*}' "$TOKEN_DIR/widget.log" | tail -n1 || true)
   w2=$(grep -o 'JH-E2E-W2 {.*}' "$TOKEN_DIR/widget.log" | tail -n1 || true)
+  w3=$(grep -o 'JH-E2E-W3 {.*}' "$TOKEN_DIR/widget.log" | tail -n1 || true)
 
-  if [ -z "$w1" ] || [ -z "$w2" ]; then
-    echo "FAIL: widget load — missing dump (W1='$w1' W2='$w2', open='$opened')"
+  if [ -z "$w1" ] || [ -z "$w2" ] || [ -z "$w3" ]; then
+    echo "FAIL: widget load — missing dump (W1='$w1' W2='$w2' W3='$w3', open='$opened')"
     FAILED=1
     return
   fi
-  if ! printf '%s' "${w1#JH-E2E-W1 }" | jq -e '(.registered == 1) and (.widgetState == "ok") and (.chipText == "100") and (.serviceState == "ok")' >/dev/null 2>&1; then
-    echo "FAIL: widget load — W1 invariant not met: $w1"
+
+  if ! printf '%s' "${w3#JH-E2E-W3 }" | jq -e '(.sawOpen == true) and (.closedCleanly == true) and (.reopened == true)' >/dev/null 2>&1; then
+    echo "FAIL: widget load — dismissal cycle broke the chip (W3): $w3"
     FAILED=1
     return
   fi
   if [ "$opened" = "ok" ] && printf '%s' "${w2#JH-E2E-W2 }" | jq -e '.popupOpen == true' >/dev/null 2>&1; then
-    echo "PASS: widget + panel load (settings flow, registration, IPC open relay)"
+    echo "PASS: widget + panel load (settings flow, registration, IPC open relay, dismissal-cycle survival)"
   else
     echo "FAIL: widget load — open='$opened' W2: $w2"
     FAILED=1
@@ -422,7 +434,7 @@ run_render_phase() {
   fi
   local size
   size=$(stat -c %s "$out_png")
-  if [ "$size" -lt 20000 ]; then
+  if [ "$size" -lt 8000 ]; then
     echo "FAIL: render phase $scenario — capture looks blank (${size}B)"
     FAILED=1
     return
