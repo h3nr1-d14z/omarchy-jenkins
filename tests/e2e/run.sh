@@ -51,11 +51,12 @@ cp "$ROOT/tests/e2e/render-shell.qml" "$E2E_DIR/render-shell.qml"
 cp "$ROOT/tests/e2e/action-shell.qml" "$E2E_DIR/action-shell.qml"
 cp "$ROOT/tests/e2e/lifecycle-shell.qml" "$E2E_DIR/lifecycle-shell.qml"
 cp "$ROOT/tests/e2e/auth-shell.qml" "$E2E_DIR/auth-shell.qml"
+cp "$ROOT/tests/e2e/firstrun-shell.qml" "$E2E_DIR/firstrun-shell.qml"
 
 # Kill a background server and WAIT for it to die. Python's
-# ThreadingHTTPServer.server_close() can block on lingering keep-alive
-# handler threads, so a bare kill may leave the port held — and a new
-# server would then fail to bind while the old one keeps answering.
+# ThreadingHTTPServer can survive SIGTERM (server_close blocks on
+# keep-alive handler threads), so a bare kill may leave the port held —
+# a new server would then fail to bind while the old one keeps answering.
 kill_wait() {
   local pid="$1" i
   [ -n "$pid" ] || return 0
@@ -774,11 +775,59 @@ run_auth_phase() {
   run_auth_case missing-token noauth '(.statusMessage | contains("token"))' ""
 }
 
+# ---- phase 9: first-run experience --------------------------------------------
+# The unconfigured state (chip "setup", guidance message), a runtime
+# settings change (as omarchy drives when shell.json is edited), and the
+# tilde-path token file (the manifest default — every other phase uses
+# absolute paths, so the tilde expansion layers never ran).
+
+run_firstrun_phase() {
+  rm -rf "$HOME/.jh-e2e-test"
+  mkdir -p "$HOME/.jh-e2e-test"
+  printf 'e2e-token-123\n' > "$HOME/.jh-e2e-test/token"
+
+  start_mock healthy
+  JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
+    qs -p "$E2E_DIR/firstrun-shell.qml" >"$TOKEN_DIR/firstrun.log" 2>&1 || true
+  kill_wait "$MOCK_PID"
+  MOCK_PID=""
+
+  echo "--- first-run phase:" >&2
+  cat "$TOKEN_DIR/firstrun.log" >&2
+
+  local u1 u2
+  u1=$(grep -o 'JH-E2E-U1 {.*}' "$TOKEN_DIR/firstrun.log" | tail -n1 || true)
+  u2=$(grep -o 'JH-E2E-U2 {.*}' "$TOKEN_DIR/firstrun.log" | tail -n1 || true)
+
+  # tilde-path netrc must land next to the token file
+  if [ ! -f "$HOME/.jh-e2e-test/netrc" ] || ! grep -q "machine 127.0.0.1" "$HOME/.jh-e2e-test/netrc"; then
+    echo "FAIL: first-run — tilde-path netrc missing at ~/.jh-e2e-test/netrc (see stderr)"
+    FAILED=1
+    rm -rf "$HOME/.jh-e2e-test"
+    return
+  fi
+  rm -rf "$HOME/.jh-e2e-test"
+
+  if [ -z "$u1" ] || [ -z "$u2" ]; then
+    echo "FAIL: first-run — missing dumps (U1='$u1' U2='$u2')"
+    FAILED=1
+    return
+  fi
+  if printf '%s' "${u1#JH-E2E-U1 }" | jq -e '(.state == "unconfigured") and (.chipText == "setup") and (.statusMessage | contains("jenkinsUrl"))' >/dev/null 2>&1 \
+    && printf '%s' "${u2#JH-E2E-U2 }" | jq -e '(.state == "ok") and (.score == 100) and (.chipText == "100") and (.version == "2.440.3")' >/dev/null 2>&1; then
+    echo "PASS: first-run (unconfigured 'setup' chip → runtime settings change → tilde-path token → ok/100)"
+  else
+    echo "FAIL: first-run — U1: $u1 U2: $u2"
+    FAILED=1
+  fi
+}
+
 run_render_both_phases
 run_action_phase
 run_crumbless_phase
 run_lifecycle_phase
 run_auth_phase
+run_firstrun_phase
 
 if [ "$FAILED" = 1 ]; then
   echo "E2E-FAILED"
