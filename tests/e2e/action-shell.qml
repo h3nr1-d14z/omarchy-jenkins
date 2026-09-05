@@ -33,15 +33,30 @@ ShellRoot {
       notifyMaintenance: false
     })
   }
-
   Timer {
     // Netrc completes ~0.5s in; the first poll fails against the action
     // server (404 /api/json → outage state), which is fine — runAction
-    // only needs jenkinsUrl and netrcOk.
+    // only needs jenkinsUrl and netrcOk. Three spaced actions cover the
+    // three command shapes: bare endpoint, query-string targetId, and the
+    // computer path.
     interval: 2000
     running: true
     repeat: false
     onTriggered: service.runAction("quietDown", null)
+  }
+
+  Timer {
+    interval: 2600
+    running: true
+    repeat: false
+    onTriggered: service.runAction("cancelQueueItem", 207)
+  }
+
+  Timer {
+    interval: 3200
+    running: true
+    repeat: false
+    onTriggered: service.runAction("nodeOffline", "build-agent-03")
   }
 
   Timer {

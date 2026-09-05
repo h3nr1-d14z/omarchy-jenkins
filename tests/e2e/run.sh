@@ -176,28 +176,29 @@ run_ipc_phase() {
   QS_PID=$!
   sleep 2
 
-  local status refresh open
+  local status refresh open close toggle
   status=$(qs ipc --pid "$QS_PID" call jenkins-health status 2>&1 || true)
   refresh=$(qs ipc --pid "$QS_PID" call jenkins-health refresh 2>&1 || true)
   open=$(qs ipc --pid "$QS_PID" call jenkins-health open 2>&1 || true)
+  close=$(qs ipc --pid "$QS_PID" call jenkins-health close 2>&1 || true)
+  toggle=$(qs ipc --pid "$QS_PID" call jenkins-health toggle 2>&1 || true)
   kill "$QS_PID" 2>/dev/null || true
   wait "$QS_PID" 2>/dev/null || true
   QS_PID=""
   kill "$MOCK_PID" 2>/dev/null || true
   MOCK_PID=""
 
-  echo "--- IPC responses:" >&2
-  printf 'status:  %s\nrefresh: %s\nopen:    %s\n' "$status" "$refresh" "$open" >&2
+  printf 'status:  %s\nrefresh: %s\nopen:    %s\nclose:   %s\ntoggle:  %s\n' "$status" "$refresh" "$open" "$close" "$toggle" >&2
 
   if ! printf '%s' "$status" | jq -e '(.state == "ok") and (.score == 100) and (.version == "2.440.3")' >/dev/null 2>&1; then
     echo "FAIL: IPC status — got: $status"
     FAILED=1
     return
   fi
-  if [ "$refresh" = "ok" ] && [ "$open" = "ok" ]; then
-    echo "PASS: IPC surface (status JSON, refresh, open)"
+  if [ "$refresh" = "ok" ] && [ "$open" = "ok" ] && [ "$close" = "ok" ] && [ "$toggle" = "ok" ]; then
+    echo "PASS: IPC surface (status JSON, refresh, open, close, toggle)"
   else
-    echo "FAIL: IPC — refresh='$refresh' open='$open'"
+    echo "FAIL: IPC — refresh='$refresh' open='$open' close='$close' toggle='$toggle'"
     FAILED=1
   fi
 }
@@ -366,8 +367,8 @@ class H(BaseHTTPRequestHandler):
         if n:
             self.rfile.read(n)
         with open(log, "a") as f:
-            f.write("POST %s\\n" % self.path)
-            f.write("crumb: %s\\n" % self.headers.get("Jenkins-Crumb", ""))
+            f.write("POST %s\n" % self.path)
+            f.write("crumb: %s\n" % self.headers.get("Jenkins-Crumb", ""))
         self._reply(200, b'{}')
 
     def log_message(self, *a):
@@ -408,14 +409,25 @@ PYEOF
     rm -f "$action_srv" "$action_log"
     return
   fi
-  if ! grep -q "POST /quietDown" "$action_log" || ! grep -q "crumb: action-crumb-1" "$action_log"; then
-    echo "FAIL: action phase — POST/crumb not received (see stderr)"
+  local posts crumbs
+  posts=$(grep -c "^POST " "$action_log" || true)
+  crumbs=$(grep -c "crumb: action-crumb-1" "$action_log" || true)
+  if [ "$posts" -ne 3 ] || [ "$crumbs" -ne 3 ]; then
+    echo "FAIL: action phase — expected 3 POSTs with crumbs, got $posts/$crumbs (see stderr)"
     FAILED=1
     rm -f "$action_srv" "$action_log"
     return
   fi
+  for want in "POST /quietDown" "POST /queue/cancelItem?id=207" "POST /computer/build-agent-03/doChangeOffline"; do
+    if ! grep -qF "$want" "$action_log"; then
+      echo "FAIL: action phase — missing '$want' (see stderr)"
+      FAILED=1
+      rm -f "$action_srv" "$action_log"
+      return
+    fi
+  done
   rm -f "$action_srv" "$action_log"
-  echo "PASS: safe actions (crumb + POST /quietDown + persisted feedback)"
+  echo "PASS: safe actions (quietDown + cancelQueueItem?id + nodeOffline paths, 3 crumbs, persisted feedback)"
 }
 
 # ---- phase 7: widget lifecycle -----------------------------------------------
