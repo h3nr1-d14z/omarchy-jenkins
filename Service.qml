@@ -232,6 +232,26 @@ Item {
       }
 
       if (step.key === "api" && !fetched.api) {
+        // The controller is not answering with JSON. curl -D - still
+        // delivers response headers on HTTP failures, so the status line
+        // tells an auth rejection or a mis-set URL apart from an outage.
+        var sm = header.match(/^HTTP\/[\d.]+[ \t]+(\d{3})/)
+        var code = sm ? parseInt(sm[1], 10) : 0
+        if (code === 401 || code === 403) {
+          busy = false
+          stateName = "noauth"
+          statusMessage = "Jenkins rejected the credentials (HTTP " + code + ") — check jenkinsUser and the token file"
+          // Re-baseline: never diff events across a blind window.
+          prevSnapshot = null
+          return
+        }
+        if (code >= 300 && code < 400) {
+          busy = false
+          stateName = "unconfigured"
+          statusMessage = "Jenkins redirected (HTTP " + code + ") — check the jenkinsUrl scheme"
+          prevSnapshot = null
+          return
+        }
         // Controller unreachable: skip the rest of the cycle.
         stepIndex = steps.length
         finalize()
