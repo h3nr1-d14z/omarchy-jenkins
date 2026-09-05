@@ -1,0 +1,101 @@
+{
+  "_class": "hudson.model.Queue",
+  "items": [
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 201,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "release-publish", "url": "https://ci.example.com/job/release-publish/", "color": "blue"},
+      "why": "Waiting for next available executor",
+      "inQueueSince": 1704066300000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 202,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "nightly-e2e", "url": "https://ci.example.com/job/nightly-e2e/", "color": "blue"},
+      "why": "Waiting for next available executor on build-agent-02",
+      "inQueueSince": 1704066400000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 203,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "hotfix-verify", "url": "https://ci.example.com/job/hotfix-verify/", "color": "blue"},
+      "why": "Waiting for next available executor",
+      "inQueueSince": 1704066500000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 204,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "container-build", "url": "https://ci.example.com/job/container-build/", "color": "blue"},
+      "why": "Waiting for next available executor",
+      "inQueueSince": 1704066600000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 205,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "smoke-tests", "url": "https://ci.example.com/job/smoke-tests/", "color": "blue"},
+      "why": "Waiting for next available executor on build-agent-04",
+      "inQueueSince": 1704066650000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 206,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "api-contract", "url": "https://ci.example.com/job/api-contract/", "color": "blue"},
+      "why": "Waiting for next available executor",
+      "inQueueSince": 1704066700000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 207,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "migrations-check", "url": "https://ci.example.com/job/migrations-check/", "color": "blue"},
+      "why": "Waiting for available executor",
+      "inQueueSince": 1704066750000,
+      "stuck": true
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 208,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "load-test", "url": "https://ci.example.com/job/load-test/", "color": "blue"},
+      "why": "Waiting for next available executor",
+      "inQueueSince": 1704066800000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 209,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "security-scan", "url": "https://ci.example.com/job/security-scan/", "color": "blue"},
+      "why": "Waiting for next available executor",
+      "inQueueSince": 1704066850000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 210,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "ui-regression", "url": "https://ci.example.com/job/ui-regression/", "color": "blue"},
+      "why": "Waiting for next available executor on build-agent-05",
+      "inQueueSince": 1704066900000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 211,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "perf-bench", "url": "https://ci.example.com/job/perf-bench/", "color": "blue"},
+      "why": "Waiting for next available executor",
+      "inQueueSince": 1704066950000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 212,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "docs-deploy", "url": "https://ci.example.com/job/docs-deploy/", "color": "blue"},
+      "why": "Waiting for next available executor",
+      "inQueueSince": 1704067000000,
+      "stuck": false
+    }
+  ]
+}

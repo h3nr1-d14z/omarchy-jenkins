@@ -1,0 +1,21 @@
+{
+  "_class": "hudson.model.Queue",
+  "items": [
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 101,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "nightly-e2e", "url": "https://ci.example.com/job/nightly-e2e/", "color": "blue"},
+      "why": "Waiting for next available executor on build-agent-02",
+      "inQueueSince": 1704067155000,
+      "stuck": false
+    },
+    {
+      "_class": "hudson.model.Queue$BuildableItem",
+      "id": 102,
+      "task": {"_class": "hudson.model.FreeStyleProject", "name": "release-publish", "url": "https://ci.example.com/job/release-publish/", "color": "blue"},
+      "why": "Waiting for next available executor",
+      "inQueueSince": 1704067100000,
+      "stuck": false
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "_class": "hudson.model.Hudson",
+  "mode": "NORMAL",
+  "quietingDown": false,
+  "useCrumbs": true,
+  "useSecurity": true,
+  "numExecutors": 5,
+  "jobs": [
+    {"_class": "hudson.model.FreeStyleProject", "name": "checkout-service", "url": "https://ci.example.com/job/checkout-service/", "color": "blue"},
+    {"_class": "hudson.model.FreeStyleProject", "name": "unit-tests", "url": "https://ci.example.com/job/unit-tests/", "color": "blue"},
+    {"_class": "hudson.model.FreeStyleProject", "name": "package-artifacts", "url": "https://ci.example.com/job/package-artifacts/", "color": "blue"},
+    {"_class": "hudson.model.FreeStyleProject", "name": "publish-docs", "url": "https://ci.example.com/job/publish-docs/", "color": "blue"},
+    {"_class": "hudson.model.FreeStyleProject", "name": "security-scan", "url": "https://ci.example.com/job/security-scan/", "color": "blue"},
+    {"_class": "hudson.model.FreeStyleProject", "name": "ui-regression", "url": "https://ci.example.com/job/ui-regression/", "color": "blue"},
+    {"_class": "hudson.model.FreeStyleProject", "name": "deploy-service", "url": "https://ci.example.com/job/deploy-service/", "color": "blue_anime"},
+    {"_class": "hudson.model.FreeStyleProject", "name": "docs-lint", "url": "https://ci.example.com/job/docs-lint/", "color": "yellow"}
+  ]
+}

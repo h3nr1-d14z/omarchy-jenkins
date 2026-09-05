@@ -1,0 +1,96 @@
+{
+  "_class": "hudson.model.Hudson$ComputerSet",
+  "busyExecutors": 0,
+  "computer": [
+    {
+      "_class": "hudson.model.Hudson$MasterComputer",
+      "displayName": "Built-In Node",
+      "offline": false,
+      "temporarilyOffline": false,
+      "offlineCauseReason": "",
+      "monitorData": {
+        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/var/lib/jenkins", "size": 53687091200},
+        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
+        "hudson.node_monitors.ResponseTimeMonitor": {"average": 45},
+        "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
+      },
+      "executors": [{"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "oneOffExecutors": []
+    },
+    {
+      "_class": "hudson.slaves.SlaveComputer",
+      "displayName": "build-agent-01",
+      "offline": false,
+      "temporarilyOffline": false,
+      "offlineCauseReason": "",
+      "monitorData": {
+        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/home/jenkins/agent", "size": 120000000000},
+        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
+        "hudson.node_monitors.ResponseTimeMonitor": {"average": 38},
+        "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
+      },
+      "executors": [{"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "oneOffExecutors": []
+    },
+    {
+      "_class": "hudson.slaves.SlaveComputer",
+      "displayName": "build-agent-02",
+      "offline": false,
+      "temporarilyOffline": false,
+      "offlineCauseReason": "",
+      "monitorData": {
+        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/home/jenkins/agent", "size": 80000000000},
+        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
+        "hudson.node_monitors.ResponseTimeMonitor": {"average": 52},
+        "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
+      },
+      "executors": [{"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "oneOffExecutors": []
+    },
+    {
+      "_class": "hudson.slaves.SlaveComputer",
+      "displayName": "build-agent-03",
+      "offline": false,
+      "temporarilyOffline": false,
+      "offlineCauseReason": "",
+      "monitorData": {
+        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/home/jenkins/agent", "size": 90000000000},
+        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
+        "hudson.node_monitors.ResponseTimeMonitor": {"average": 41},
+        "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
+      },
+      "executors": [{"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "oneOffExecutors": []
+    },
+    {
+      "_class": "hudson.slaves.SlaveComputer",
+      "displayName": "build-agent-04",
+      "offline": false,
+      "temporarilyOffline": false,
+      "offlineCauseReason": "",
+      "monitorData": {
+        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/home/jenkins/agent", "size": 45000000000},
+        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
+        "hudson.node_monitors.ResponseTimeMonitor": {"average": 60},
+        "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
+      },
+      "executors": [{"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "oneOffExecutors": []
+    },
+    {
+      "_class": "hudson.slaves.SlaveComputer",
+      "displayName": "build-agent-05",
+      "offline": false,
+      "temporarilyOffline": false,
+      "offlineCauseReason": "",
+      "monitorData": {
+        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/home/jenkins/agent", "size": 60000000000},
+        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
+        "hudson.node_monitors.ResponseTimeMonitor": {"average": 47},
+        "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
+      },
+      "executors": [{"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "oneOffExecutors": []
+    }
+  ]
+}

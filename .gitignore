@@ -1,0 +1,4 @@
+# never version credentials
+netrc
+token
+*.netrc

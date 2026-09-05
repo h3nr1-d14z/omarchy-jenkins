@@ -1,0 +1,17 @@
+{
+  "_class": "hudson.model.PluginManager",
+  "plugins": [
+    {"_class": "hudson.model.Plugin", "shortName": "credentials", "version": "2.6.1", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "git", "version": "5.2.2", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "github-branch-source", "version": "1772.1773", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "workflow-aggregator", "version": "596.597", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "workflow-cps", "version": "3654.3655", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "workflow-durable-task-step", "version": "1313.1314", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "pipeline-stage-view", "version": "2.34", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "junit", "version": "1267.1268", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "matrix-auth", "version": "3.1.6", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "cloudbees-folder", "version": "6.928", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "timestamper", "version": "1.26", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false},
+    {"_class": "hudson.model.Plugin", "shortName": "ws-cleanup", "version": "0.45", "hasUpdate": false, "active": true, "enabled": true, "deprecated": false}
+  ]
+}
