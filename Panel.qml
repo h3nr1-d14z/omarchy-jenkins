@@ -1,6 +1,8 @@
 import QtQuick
 import qs.Ui
 import qs.Commons
+import "Model.js" as Model
+
 
 // Jenkins Health detail panel, hosted inside the BarWidget's PopupCard.
 // Shows the latest assessment and offers the safe actions: quiet-down
@@ -19,7 +21,7 @@ Item {
   property var service: null
   property var bar: null
 
-  // Active tab: "overview" | "nodes" | "jobs" | "queue".
+  // Active tab: "overview" | "nodes" | "jobs" | "activity" | "queue".
   property string activeTab: "overview"
 
   readonly property var snap: service ? service.snapshot : null
@@ -29,6 +31,27 @@ Item {
   readonly property var queue: snap ? snap.queue : null
   readonly property var maintenance: snap ? snap.maintenance : null
   readonly property var queueItems: service ? service.queueItems : []
+  readonly property var jobs: root.ctrl && root.ctrl.jobs ? root.ctrl.jobs : []
+  readonly property var recent: root.ctrl && root.ctrl.recent ? root.ctrl.recent : []
+  readonly property var rollups: root.ctrl && root.ctrl.rollups ? root.ctrl.rollups : []
+
+  // Sparkline windows recompute whenever the service publishes a new
+  // point (lastUpdated ticks every successful poll).
+  readonly property real historyNowSec: root.service && root.service.lastUpdated
+    ? Math.floor(Date.now() / 1000) : 0
+  readonly property var scoreSlots: root.historyNowSec > 0 && root.service
+    ? Model.sparklineSlots(Model.historySeries(root.service.historyPts, "s"),
+        root.historyNowSec, 86400, 24)
+    : []
+  readonly property var queueSlots: root.historyNowSec > 0 && root.service
+    ? Model.sparklineSlots(Model.historySeries(root.service.historyPts, "q"),
+        root.historyNowSec, 86400, 24)
+    : []
+  readonly property real diskCriticalGb: root.service && root.service.config
+    && root.service.config.diskCriticalGb ? root.service.config.diskCriticalGb : 10
+  readonly property real diskWarnGb: root.service && root.service.config
+    && root.service.config.diskWarnGb ? root.service.config.diskWarnGb : 25
+
   readonly property string state: service ? service.state : "unconfigured"
   readonly property bool actionsEnabled: !!service
     && state !== "unconfigured" && state !== "noauth" && state !== "starting"
@@ -41,6 +64,118 @@ Item {
     if (sec < 60) return sec + "s"
     if (sec < 3600) return Math.floor(sec / 60) + "m"
     return Math.floor(sec / 3600) + "h" + Math.floor((sec % 3600) / 60) + "m"
+  }
+
+  function fmtDur(ms) {
+    var s = Math.round((ms || 0) / 1000)
+    if (s < 60) return s + "s"
+    if (s < 3600) return Math.floor(s / 60) + "m" + ("0" + (s % 60)).slice(-2) + "s"
+    return Math.floor(s / 3600) + "h" + Math.floor((s % 3600) / 60) + "m"
+  }
+
+  // Worst first: never-green, then lowest health, then most recent build.
+  function jobSeveritySort(a, b) {
+    var na = Model.isNeverGreen(a) ? 0 : 1
+    var nb = Model.isNeverGreen(b) ? 0 : 1
+    if (na !== nb) return na - nb
+    var ha = a.health === null || a.health === undefined ? 101 : a.health
+    var hb = b.health === null || b.health === undefined ? 101 : b.health
+    if (ha !== hb) return ha - hb
+    var ta = a.lastBuild ? a.lastBuild.timestamp : 0
+    var tb = b.lastBuild ? b.lastBuild.timestamp : 0
+    return tb - ta
+  }
+
+  function failingJobList() {
+    return root.jobs.filter(function (j) {
+      return j.color === "red" || j.color === "red_anime"
+    }).sort(root.jobSeveritySort)
+  }
+
+  function unstableJobList() {
+    return root.jobs.filter(function (j) {
+      return j.color === "yellow" || j.color === "yellow_anime"
+    }).sort(root.jobSeveritySort)
+  }
+
+  function folderRollupList() {
+    return root.rollups.filter(function (r) { return r.folder !== "" })
+  }
+
+  function jobMeta(j) {
+    var parts = []
+    if (j.health !== null && j.health !== undefined) parts.push("h" + j.health)
+    if (Model.isNeverGreen(j)) parts.push("never green")
+    if (j.lastBuild) {
+      if (!Model.isNeverGreen(j)) parts.push("#" + j.lastBuild.number)
+      parts.push(root.fmtDur(j.lastBuild.duration))
+      if (j.lastBuild.timestamp > 0) {
+        parts.push(root.fmtAge(Math.max(0, Math.round((Date.now() - j.lastBuild.timestamp) / 1000))) + " ago")
+      }
+    }
+    return parts.join(" · ")
+  }
+
+  function buildMeta(b) {
+    if (b.building) return root.fmtDur(b.durationMs) + " so far"
+    return "#" + b.number + " · " + root.fmtDur(b.durationMs) + " · "
+      + root.fmtAge(Math.max(0, Math.round((Date.now() - b.timestamp) / 1000))) + " ago"
+  }
+
+  function scoreBarColor(v) {
+    return v >= 95 ? root.foreground : v >= 50 ? Color.accent : Color.urgent
+  }
+
+  function diskBarColor(v) {
+    return v <= root.diskCriticalGb ? Color.urgent
+      : v <= root.diskWarnGb ? Color.accent : root.foreground
+  }
+
+  function nodeDiskSlots(n) {
+    if (!root.service || !root.service.historyDisks || root.historyNowSec <= 0) return []
+    var series = root.service.historyDisks[n.displayName]
+    if (!series) return []
+    return Model.sparklineSlots(series, root.historyNowSec, 86400, 20)
+  }
+
+  // Bar sparkline: one bar per slot, newest value per slot wins, empty
+  // slots render as faint stubs so gaps stay readable.
+  component Sparkline: Item {
+    id: spark
+    property var slots: []
+    property real maxValue: 100
+    property color baseColor: Color.accent
+    property var barColor: null
+
+    width: Style.space(150)
+    height: Style.space(14)
+
+    Row {
+      anchors.fill: parent
+      spacing: 1
+
+      Repeater {
+        model: spark.slots
+
+        Item {
+          width: spark.slots.length > 0
+            ? Math.max(1, Math.floor((spark.width - (spark.slots.length - 1)) / spark.slots.length))
+            : 1
+          height: spark.height
+
+          Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: modelData === null ? 1
+              : Math.max(2, parent.height * Math.max(0, Math.min(1, modelData / spark.maxValue)))
+            color: modelData === null
+              ? Qt.alpha(spark.baseColor, 0.25)
+              : (spark.barColor ? spark.barColor(modelData) : spark.baseColor)
+            radius: 1
+          }
+        }
+      }
+    }
   }
 
   function fmtGb(gb) {
@@ -64,6 +199,7 @@ Item {
   function activeContentHeight() {
     if (activeTab === "nodes") return nodesCol.implicitHeight
     if (activeTab === "jobs") return jobsCol.implicitHeight
+    if (activeTab === "activity") return activityCol.implicitHeight
     if (activeTab === "queue") return queueCol.implicitHeight
     return overviewCol.implicitHeight
   }
@@ -193,6 +329,13 @@ Item {
     }
 
     Button {
+      text: "Activity"
+      fontSize: Style.font.bodySmall
+      selected: root.activeTab === "activity"
+      onClicked: root.activeTab = "activity"
+    }
+
+    Button {
       text: "Queue" + (root.queue && root.queue.depth > 0 ? " · " + root.queue.depth : "")
       fontSize: Style.font.bodySmall
       selected: root.activeTab === "queue"
@@ -248,6 +391,86 @@ Item {
               color: root.levelColor === Color.muted ? Color.accent : root.levelColor
               font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall
+            }
+          }
+        }
+
+        Column {
+          visible: root.folderRollupList().length > 0
+          width: parent.width
+          spacing: Style.space(2)
+
+          PanelSectionHeader { text: "Folders" }
+
+          Repeater {
+            model: root.folderRollupList().slice(0, 3)
+
+            Text {
+              width: parent.width
+              elide: Text.ElideRight
+              text: modelData.folder + " · " + modelData.failing + " failing"
+                + (modelData.worstHealth !== null && modelData.worstHealth !== undefined
+                  ? " · worst h" + modelData.worstHealth : "")
+                + (modelData.neverGreen > 0 ? " · " + modelData.neverGreen + " never green" : "")
+                + " · " + modelData.total + " jobs"
+              color: modelData.failing > 0 ? Color.urgent : Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+        }
+
+        Column {
+          visible: root.historyNowSec > 0
+            && root.scoreSlots.some(function (v) { return v !== null })
+          width: parent.width
+          spacing: Style.space(4)
+
+          PanelSectionHeader { text: "Trend" }
+
+          Item {
+            width: parent.width
+            height: scoreSpark.height
+
+            Text {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Score · 24h"
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Sparkline {
+              id: scoreSpark
+              anchors.right: parent.right
+              slots: root.scoreSlots
+              maxValue: 100
+              baseColor: Color.accent
+              barColor: root.scoreBarColor
+            }
+          }
+
+          Item {
+            width: parent.width
+            height: queueSpark.height
+
+            Text {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Queue · 24h"
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Sparkline {
+              id: queueSpark
+              anchors.right: parent.right
+              slots: root.queueSlots
+              maxValue: Math.max(1, Math.max.apply(null,
+                root.queueSlots.filter(function (v) { return v !== null }).concat([1])))
+              baseColor: Color.accent
             }
           }
         }
@@ -316,42 +539,80 @@ Item {
 
           Item {
             width: parent.width
-            height: Style.space(26)
+            height: nodeLine.height
+              + (nodeDisk.visible ? nodeDisk.height + Style.space(2) : 0)
 
-            Text {
-              id: nodeName
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              width: parent.width - nodeStats.width - nodeAction.width - Style.space(24)
-              elide: Text.ElideRight
-              text: (modelData.state === "offline" ? "○ " : "● ") + modelData.displayName
-              color: root.nodeColor(modelData)
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
+            Item {
+              id: nodeLine
+              width: parent.width
+              height: Style.space(26)
+
+              Text {
+                id: nodeName
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - nodeStats.width - nodeAction.width - Style.space(24)
+                elide: Text.ElideRight
+                text: (modelData.state === "offline" ? "○ " : "● ") + modelData.displayName
+                color: root.nodeColor(modelData)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+              }
+
+              Text {
+                id: nodeStats
+                anchors.right: nodeAction.left
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.nodeStats(modelData)
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              Button {
+                id: nodeAction
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: modelData.state === "online" ? "Take offline" : "Bring online"
+                fontSize: Style.font.bodySmall
+                enabled: root.actionsEnabled
+                onClicked: if (root.service) {
+                  root.service.runAction(
+                    modelData.state === "online" ? "nodeOffline" : "nodeOnline",
+                    modelData.displayName)
+                }
+              }
             }
 
-            Text {
-              id: nodeStats
-              anchors.right: nodeAction.left
-              anchors.rightMargin: Style.space(8)
-              anchors.verticalCenter: parent.verticalCenter
-              text: root.nodeStats(modelData)
-              color: Color.muted
-              font.family: Style.font.family
-              font.pixelSize: Style.font.bodySmall
-            }
+            // 24h disk trend under the node line, only when the
+            // service has history for this node.
+            Item {
+              id: nodeDisk
+              visible: root.nodeDiskSlots(modelData).some(function (v) { return v !== null })
+              anchors.top: nodeLine.bottom
+              anchors.topMargin: Style.space(2)
+              width: parent.width
+              height: Style.space(10)
 
-            Button {
-              id: nodeAction
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              text: modelData.state === "online" ? "Take offline" : "Bring online"
-              fontSize: Style.font.bodySmall
-              enabled: root.actionsEnabled
-              onClicked: if (root.service) {
-                root.service.runAction(
-                  modelData.state === "online" ? "nodeOffline" : "nodeOnline",
-                  modelData.displayName)
+              Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: "disk 24h"
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              Sparkline {
+                anchors.right: parent.right
+                width: Style.space(120)
+                height: parent.height
+                slots: root.nodeDiskSlots(modelData)
+                maxValue: Math.max(1, Math.max.apply(null,
+                  root.nodeDiskSlots(modelData).filter(function (v) { return v !== null }).concat([1])))
+                baseColor: root.foreground
+                barColor: root.diskBarColor
               }
             }
           }
@@ -374,6 +635,8 @@ Item {
           text: root.ctrl
             ? root.ctrl.failures + " failing · " + root.ctrl.unstable + " unstable · "
               + root.ctrl.building + " building"
+              + (root.ctrl.neverGreen > 0 ? " · " + root.ctrl.neverGreen + " never green" : "")
+              + (root.ctrl.degrading > 0 ? " · " + root.ctrl.degrading + " degrading" : "")
             : ""
           color: root.ctrl && root.ctrl.failures > 0 ? Color.urgent : Color.muted
           font.family: Style.font.family
@@ -381,7 +644,7 @@ Item {
         }
 
         Repeater {
-          model: root.ctrl && root.ctrl.failingNames ? root.ctrl.failingNames : []
+          model: root.failingJobList().slice(0, 50)
 
           Item {
             width: parent.width
@@ -390,18 +653,36 @@ Item {
             Text {
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
-              width: parent.width - Style.space(8)
+              width: parent.width - failMeta.width - Style.space(8)
               elide: Text.ElideRight
-              text: "✗ " + modelData
+              text: "✗ " + modelData.name
               color: Color.urgent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Text {
+              id: failMeta
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.jobMeta(modelData)
+              color: Color.muted
               font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall
             }
           }
         }
 
+        Text {
+          visible: root.failingJobList().length > 50
+          text: "+ " + (root.failingJobList().length - 50) + " more failing…"
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
+
         Repeater {
-          model: root.ctrl && root.ctrl.unstableNames ? root.ctrl.unstableNames : []
+          model: root.unstableJobList().slice(0, 20)
 
           Item {
             width: parent.width
@@ -410,14 +691,32 @@ Item {
             Text {
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
-              width: parent.width - Style.space(8)
+              width: parent.width - unMeta.width - Style.space(8)
               elide: Text.ElideRight
-              text: "△ " + modelData
+              text: "△ " + modelData.name
               color: Color.accent
               font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall
             }
+
+            Text {
+              id: unMeta
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.jobMeta(modelData)
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
           }
+        }
+
+        Text {
+          visible: root.unstableJobList().length > 20
+          text: "+ " + (root.unstableJobList().length - 20) + " more unstable…"
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
         }
 
         Repeater {
@@ -438,6 +737,80 @@ Item {
               font.pixelSize: Style.font.bodySmall
             }
           }
+        }
+      }
+
+      // == activity tab
+
+      Column {
+        id: activityCol
+        visible: root.activeTab === "activity"
+        width: parent.width
+        spacing: Style.space(2)
+
+        PanelSectionHeader { text: "Activity" }
+
+        Text {
+          width: parent.width
+          text: "last build per job · newest first"
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        Repeater {
+          model: root.recent
+
+          Item {
+            width: parent.width
+            height: Style.space(22)
+
+            Text {
+              id: actGlyph
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(14)
+              text: modelData.building ? "↻"
+                : modelData.result === "SUCCESS" ? "●"
+                : modelData.result === "FAILURE" ? "✗"
+                : modelData.result === "UNSTABLE" ? "△" : "○"
+              color: modelData.building ? Color.muted
+                : modelData.result === "SUCCESS" ? root.foreground
+                : modelData.result === "FAILURE" ? Color.urgent
+                : modelData.result === "UNSTABLE" ? Color.accent : Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Text {
+              anchors.left: actGlyph.right
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - actMeta.width - Style.space(22)
+              elide: Text.ElideRight
+              text: modelData.name
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Text {
+              id: actMeta
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.buildMeta(modelData)
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+        }
+
+        Text {
+          visible: root.recent.length === 0
+          text: "no build data available"
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
         }
       }
 

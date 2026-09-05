@@ -16,6 +16,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PORT=28888
 TOKEN_DIR=$(mktemp -d)
+# Every E2E shell must keep its fixture history (mock 100/50/0-score
+# points) out of the user's real sparkline cache.
+export JH_HISTORY_PATH="$TOKEN_DIR/history.json"
 MOCK_PID=""
 ACTION_PID=""
 QS_PID=""
@@ -501,8 +504,13 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        # Same contract as mock_jenkins.py: a tree query gets the
+        # nested fixture (folders + extended leaf data); a plain
+        # /api/json gets the flat one.
         if path == "/crumbIssuer/api/json":
             self._reply(200, b'{"crumb":"action-crumb-1","crumbRequestField":"Jenkins-Crumb"}')
+        elif path == "/api/json" and "tree=" in self.path and (fixtures / "api-tree.json").exists():
+            self._reply(200, (fixtures / "api-tree.json").read_bytes())
         elif path in routes:
             self._reply(200, (fixtures / routes[path]).read_bytes())
         else:
@@ -560,7 +568,7 @@ PYEOF2
   fi
   local d
   d=$(grep -o 'JH-E2E-I {.*}' "$TOKEN_DIR/interaction.log" | tail -n1 || true)
-  if [ -z "$d" ] || ! printf '%s' "${d#JH-E2E-I }" | jq -e '(.actionMessage == "action sent") and (.queueDepth == 12)' >/dev/null 2>&1; then
+  if [ -z "$d" ] || ! printf '%s' "${d#JH-E2E-I }" | jq -e '(.actionMessage == "action sent") and (.queueDepth == 12) and (.activityProbe.tab == "activity") and (.activityProbe.sawBuilding == true) and (.activityProbe.sawRecent == true) and (.tabHeights.activity > .tabHeights.jobs)' >/dev/null 2>&1; then
     echo "FAIL: interaction — dump wrong: $d"
     FAILED=1
     rm -f "$srv" "$log"

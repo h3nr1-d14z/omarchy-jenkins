@@ -41,6 +41,11 @@ Item {
   readonly property string statusMessage: internal.statusMessage
   readonly property string actionMessage: internal.actionMessage
   readonly property bool busy: internal.busy
+  // Time series for the panel sparklines (persisted across restarts;
+  // see the history section in Model.js for the retention policy).
+  readonly property var historyPts: internal.historyPts
+  readonly property var historyDisks: internal.historyDisks
+
 
   function applyConfig(cfg) {
     if (!cfg || typeof cfg !== "object") return
@@ -88,6 +93,8 @@ Item {
     internal.runAction(action, targetId)
   }
 
+  Component.onCompleted: internal.loadHistory()
+
   QtObject {
     id: internal
 
@@ -109,16 +116,23 @@ Item {
     property string tokenFile: ""
     property int generation: 0
     property int pollGeneration: -1
+    property var historyPts: []
+    property var historyDisks: ({})
+    property string historyPath: ""
+    property bool historyLoaded: false
+
 
     readonly property var steps: [
-      // Tree query: jobs two folders deep with colors (a plain /api/json
-      // lists only top-level folders, whose color is null — on controllers
-      // that organize jobs in folders this keeps the failures feed real).
-      // Model.parseController flattens the nested jobs array; the scalar
-      // fields it parses are requested alongside.
+      // Tree query: jobs three levels deep, colors plus the extended
+      // per-leaf data (Jenkins healthReport score, last build, last
+      // successful build). Model.parseController flattens the nesting;
+      // a plain /api/json lists only top-level folders, whose color is
+      // null — on folder-organized controllers that keeps the failures
+      // feed real, and the extended fields power the Jobs detail rows,
+      // the Activity feed and the never-green detection.
       // Brackets are percent-encoded: curl treats literal [] in a URL as
       // glob ranges (exit 3) unless --globoff; Jenkins accepts %5B/%5D.
-      { endpoint: "/api/json?tree=jobs%5Bname,color,jobs%5Bname,color,jobs%5Bname,color%5D%5D%5D,mode,quietingDown,useCrumbs,useSecurity,numExecutors", key: "api" },
+      { endpoint: "/api/json?tree=jobs%5Bname,color,healthReport%5Bscore,description%5D,lastBuild%5Bnumber,timestamp,duration,result,building%5D,lastSuccessfulBuild%5Bnumber,timestamp,duration%5D,jobs%5Bname,color,healthReport%5Bscore,description%5D,lastBuild%5Bnumber,timestamp,duration,result,building%5D,lastSuccessfulBuild%5Bnumber,timestamp,duration%5D,jobs%5Bname,color,healthReport%5Bscore,description%5D,lastBuild%5Bnumber,timestamp,duration,result,building%5D,lastSuccessfulBuild%5Bnumber,timestamp,duration%5D%5D%5D%5D,mode,quietingDown,useCrumbs,useSecurity,numExecutors", key: "api" },
       { endpoint: "/computer/api/json", key: "computer" },
       { endpoint: "/queue/api/json", key: "queue" },
       { endpoint: "/pluginManager/api/json", key: "plugins" },
@@ -163,6 +177,59 @@ Item {
       stateName = "starting"
       statusMessage = "reading API token…"
       reauth()
+    }
+
+    // ---- history persistence (score/queue/disk time series)
+    // The cache file is regenerable, so ~/.cache is the right home; a
+    // corrupt or absent file just starts an empty history.
+
+    function loadHistory() {
+      // The default path sits under ~/.cache (regenerable) and can be
+      // overridden with JH_HISTORY_PATH so test shells never touch the
+      // real history. Read via cat: FileView loads async, so text()
+      // right after assigning path reliably returns "" (every restore
+      // silently failed that way); a Process exit is deterministic.
+      var override = Quickshell.env("JH_HISTORY_PATH") || ""
+      historyPath = override ? override
+        : expandTilde("~/.cache/jenkins-health/history.json")
+      historyReadProcess.command = [
+        "bash", "-c", 'cat "$1" 2>/dev/null || true', "jh-history-read", historyPath
+      ]
+      historyReadProcess.running = true
+    }
+
+    function onHistoryReadExit(text) {
+      // Always latch the flag: a missing or corrupt cache just means an
+      // empty history, and finalize() only appends once the (possibly
+      // empty) prior state is known.
+      historyLoaded = true
+      var doc = null
+      try {
+        doc = JSON.parse(String(text || ""))
+      } catch (e) {
+        doc = null
+      }
+      if (doc && typeof doc === "object" && doc.v === 1) {
+        historyPts = Array.isArray(doc.pts) ? doc.pts : []
+        historyDisks = doc.disks && typeof doc.disks === "object" && !Array.isArray(doc.disks)
+          ? doc.disks : ({})
+      }
+    }
+
+    function persistHistory() {
+      // Best-effort: skip when a write is in flight — the next poll's
+      // point carries the state forward anyway. The JSON reaches bash
+      // as a positional argument (never interpolated into the script),
+      // and the file is world-inaccessible (umask 077).
+      if (!historyPath || historyWriteProcess.running) return
+      historyWriteProcess.command = [
+        "bash", "-c",
+        'umask 077\nmkdir -p "${2%/*}" 2>/dev/null || true\nprintf %s "$1" > "$2"',
+        "jh-history",
+        JSON.stringify({ v: 1, pts: historyPts, disks: historyDisks }),
+        historyPath
+      ]
+      historyWriteProcess.running = true
     }
 
     // Re-read the token file and rewrite the netrc (onNetrcExit chains into
@@ -308,6 +375,23 @@ Item {
       lastUpdatedText = ("0" + d.getHours()).slice(-2) + ":" +
         ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2)
 
+      // History: one point per successful poll; compaction keeps the
+      // persisted cache small and bounded (see Model.js). Skipped until
+      // the startup read latched, so no point lands on an unloaded
+      // prior state.
+      if (historyLoaded) {
+        var tSec = Math.floor(Date.now() / 1000)
+        historyPts = Model.historyCompactPts(
+          Model.historyAppendPt(historyPts, tSec, snap.overall.score, snap.queue.depth), tSec)
+        var disksNext = historyDisks
+        for (var h = 0; h < snap.nodes.length; h++) {
+          disksNext = Model.historyAppendDisk(disksNext,
+            snap.nodes[h].displayName, tSec, snap.nodes[h].diskGb)
+        }
+        historyDisks = Model.historyCompactDisks(disksNext, tSec)
+        persistHistory()
+      }
+
       for (var i = 0; i < events.length; i++) notifyEvent(events[i])
     }
 
@@ -392,6 +476,17 @@ Item {
   property Process actionProcess: Process {
     stdout: StdioCollector { id: actionOut; waitForEnd: true }
     onExited: function(exitCode) { internal.onActionExit(exitCode) }
+  }
+
+  property Process historyWriteProcess: Process {
+    stdout: StdioCollector { waitForEnd: true }
+    // Best-effort cache write; failures surface nowhere by design.
+    onExited: function(exitCode) {}
+  }
+
+  property Process historyReadProcess: Process {
+    stdout: StdioCollector { id: historyReadOut; waitForEnd: true }
+    onExited: function(exitCode) { internal.onHistoryReadExit(historyReadOut.text || "") }
   }
 
   property Timer pollTimer: Timer {

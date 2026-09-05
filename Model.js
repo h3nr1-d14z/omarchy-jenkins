@@ -41,6 +41,11 @@ function jhJoinUrl(base, endpoint) {
 
 
 // Recursive job collector for nested folder listings (see parseController).
+// Leaves carry the extended per-job data from the tree query: Jenkins'
+// own healthReport score, the last build (number/result/duration/time)
+// and the last successful build (null = the job has never gone green).
+// Every extended field degrades to null when absent, so flat/legacy
+// listings parse identically to the shape the fixtures froze.
 function jhCollectJobs(rawJobs, prefix, out) {
   for (var i = 0; i < rawJobs.length; i++) {
     var j = rawJobs[i]
@@ -50,7 +55,26 @@ function jhCollectJobs(rawJobs, prefix, out) {
     if (Array.isArray(j.jobs)) {
       jhCollectJobs(j.jobs, full, out)
     } else {
-      out.push({ name: full, color: jhStr(j.color, "") })
+      var hr = Array.isArray(j.healthReport) && jhIsObject(j.healthReport[0])
+        ? j.healthReport[0] : null
+      out.push({
+        name: full,
+        color: jhStr(j.color, ""),
+        health: hr ? jhNum(hr.score, null) : null,
+        healthDesc: hr ? jhStr(hr.description, "") : "",
+        lastBuild: jhIsObject(j.lastBuild) ? {
+          number: jhNum(j.lastBuild.number, 0),
+          timestamp: jhNum(j.lastBuild.timestamp, 0),
+          duration: jhNum(j.lastBuild.duration, 0),
+          result: jhStr(j.lastBuild.result, ""),
+          building: !!j.lastBuild.building
+        } : null,
+        lastSuccess: jhIsObject(j.lastSuccessfulBuild) ? {
+          number: jhNum(j.lastSuccessfulBuild.number, 0),
+          timestamp: jhNum(j.lastSuccessfulBuild.timestamp, 0),
+          duration: jhNum(j.lastSuccessfulBuild.duration, 0)
+        } : null
+      })
     }
   }
 }
@@ -238,7 +262,9 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
         status: "unreachable", level: "critical", healthScore: 0,
         reasons: ["controller unreachable"],
         failures: 0, unstable: 0, building: 0, quietingDown: false,
-        failingNames: [], unstableNames: [], buildingNames: []
+        failingNames: [], unstableNames: [], buildingNames: [],
+        jobs: [], neverGreen: 0, degrading: 0, built24h: 0,
+        recent: [], rollups: []
       },
       nodes: [],
       queue: { depth: 0, stuck: 0, backlog: false, oldestSec: 0 },
@@ -265,6 +291,21 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
     } else if (color === "red" || color === "red_anime") {
       redCount++
       failingNames.push(name)
+    }
+  }
+  // --- job depth (extended fields; all null-safe on flat listings)
+  var neverGreen = 0
+  var degrading = 0
+  var built24h = 0
+  var nowMs = jhNum(now, 0)
+  var dayAgoMs = nowMs - 86400000
+  for (var d = 0; d < jobs.length; d++) {
+    var dj = jobs[d]
+    if (isNeverGreen(dj)) neverGreen++
+    if (isDegrading(dj)) degrading++
+    if (jhIsObject(dj.lastBuild) && dj.lastBuild.timestamp >= dayAgoMs
+      && dj.lastBuild.timestamp <= nowMs) {
+      built24h++
     }
   }
 
@@ -411,7 +452,13 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
       quietingDown: quietingDown,
       failingNames: failingNames,
       unstableNames: unstableNames,
-      buildingNames: buildingNames
+      buildingNames: buildingNames,
+      jobs: jobs,
+      neverGreen: neverGreen,
+      degrading: degrading,
+      built24h: built24h,
+      recent: recentBuilds(jobs, 20),
+      rollups: folderRollups(jobs)
     },
     nodes: nodeOut,
     queue: {
@@ -570,6 +617,197 @@ function diffEvents(prevSnapshot, nextSnapshot, config) {
   return events
 }
 
+// ------------------------------------------------------------- job depth
+// Views over the enriched leaf records (see jhCollectJobs). All pure and
+// null-safe: a listing without the extended fields yields empty views.
+
+function jobFolder(name) {
+  var s = String(name || "")
+  var slash = s.indexOf("/")
+  return slash === -1 ? "" : s.substring(0, slash)
+}
+
+// "Never green": the job has run at least once and has no successful
+// build on record — the strongest broken-vs-flaky signal the tree
+// query exposes without per-job build requests.
+function isNeverGreen(job) {
+  return !!job
+    && job.lastBuild !== null && job.lastBuild !== undefined
+    && (job.lastSuccess === null || job.lastSuccess === undefined)
+}
+
+// Ball still blue but the health report is degraded — failing builds
+// hiding behind a last-success color.
+function isDegrading(job) {
+  return !!job
+    && job.health !== null && job.health !== undefined && job.health < 100
+    && (job.color === "blue" || job.color === "blue_anime")
+}
+
+// Most recent builds across the catalog, newest first. One build per
+// job (the tree query returns lastBuild only) — an honest "last
+// builds" feed, not a full build log.
+function recentBuilds(jobs, limit) {
+  var src = Array.isArray(jobs) ? jobs : []
+  var lim = jhNum(limit, 20)
+  var withBuilds = []
+  for (var i = 0; i < src.length; i++) {
+    if (jhIsObject(src[i]) && jhIsObject(src[i].lastBuild)) withBuilds.push(src[i])
+  }
+  withBuilds.sort(function (a, b) {
+    return b.lastBuild.timestamp - a.lastBuild.timestamp
+  })
+  var out = []
+  for (var k = 0; k < withBuilds.length && out.length < lim; k++) {
+    var jb = withBuilds[k].lastBuild
+    out.push({
+      name: jhStr(withBuilds[k].name, ""),
+      building: !!jb.building,
+      result: jhStr(jb.result, ""),
+      number: jhNum(jb.number, 0),
+      durationMs: jhNum(jb.duration, 0),
+      timestamp: jhNum(jb.timestamp, 0)
+    })
+  }
+  return out
+}
+
+// Per-top-level-folder rollups for the Overview tab, worst first
+// (most failing, then lowest health). Flat listings roll up under "".
+function folderRollups(jobs) {
+  var src = Array.isArray(jobs) ? jobs : []
+  var byFolder = {}
+  var order = []
+  for (var i = 0; i < src.length; i++) {
+    var j = src[i]
+    if (!jhIsObject(j)) continue
+    var f = jobFolder(j.name)
+    if (!jhIsObject(byFolder[f])) {
+      byFolder[f] = { folder: f, total: 0, failing: 0, neverGreen: 0, worstHealth: null }
+      order.push(f)
+    }
+    var r = byFolder[f]
+    r.total++
+    var c = jhStr(j.color, "")
+    if (c === "red" || c === "red_anime") r.failing++
+    if (isNeverGreen(j)) r.neverGreen++
+    if (j.health !== null && j.health !== undefined
+      && (r.worstHealth === null || j.health < r.worstHealth)) {
+      r.worstHealth = j.health
+    }
+  }
+  var out = []
+  for (var k = 0; k < order.length; k++) out.push(byFolder[order[k]])
+  out.sort(function (a, b) {
+    if (b.failing !== a.failing) return b.failing - a.failing
+    var ha = a.worstHealth === null ? 101 : a.worstHealth
+    var hb = b.worstHealth === null ? 101 : b.worstHealth
+    return ha - hb
+  })
+  return out
+}
+
+// ---------------------------------------------------------------- history
+// Time series kept by the service (persisted across restarts): one point
+// per successful poll plus per-node disk readings. Compaction is pure
+// and bucketed: raw points inside the last hour, 5-minute buckets for
+// points (15 for disk) up to 24h, older points dropped. Sparklines read
+// the compacted series through fixed slot windows.
+
+function historyAppendPt(pts, tSec, score, queueDepth) {
+  var next = (Array.isArray(pts) ? pts : []).slice()
+  next.push({ t: jhNum(tSec, 0), s: jhNum(score, 0), q: jhNum(queueDepth, 0) })
+  return next
+}
+
+function historyCompactPts(pts, nowSec) {
+  var src = Array.isArray(pts) ? pts : []
+  var now = jhNum(nowSec, 0)
+  var hourAgo = now - 3600
+  var dayAgo = now - 86400
+  var out = []
+  for (var i = 0; i < src.length; i++) {
+    var p = src[i]
+    if (!jhIsObject(p) || typeof p.t !== "number" || p.t < dayAgo) continue
+    if (p.t >= hourAgo) {
+      out.push(p)
+      continue
+    }
+    // Points arrive oldest-first: same 5-minute bucket replaces the
+    // previous sample so each bucket keeps its newest reading.
+    var b = Math.floor(p.t / 300)
+    var last = out.length > 0 ? out[out.length - 1] : null
+    if (last && Math.floor(last.t / 300) === b) out[out.length - 1] = p
+    else out.push(p)
+  }
+  return out
+}
+
+function historyAppendDisk(disks, name, tSec, gb) {
+  var src = jhIsObject(disks) ? disks : {}
+  var key = jhStr(name, "")
+  if (!key || gb === null || gb === undefined) return src
+  var next = {}
+  for (var k in src) next[k] = src[k]
+  next[key] = (Array.isArray(src[key]) ? src[key] : [])
+    .concat([{ t: jhNum(tSec, 0), v: jhNum(gb, 0) }])
+  return next
+}
+
+function historyCompactDisk(series, nowSec) {
+  var src = Array.isArray(series) ? series : []
+  var dayAgo = jhNum(nowSec, 0) - 86400
+  var out = []
+  for (var i = 0; i < src.length; i++) {
+    var p = src[i]
+    if (!jhIsObject(p) || typeof p.t !== "number" || p.t < dayAgo) continue
+    var b = Math.floor(p.t / 900)
+    var last = out.length > 0 ? out[out.length - 1] : null
+    if (last && Math.floor(last.t / 900) === b) out[out.length - 1] = p
+    else out.push(p)
+  }
+  return out
+}
+
+function historyCompactDisks(disks, nowSec) {
+  var src = jhIsObject(disks) ? disks : {}
+  var out = {}
+  for (var k in src) out[k] = historyCompactDisk(src[k], nowSec)
+  return out
+}
+
+// Project a {t, field} series onto the {t, v} shape sparklineSlots reads.
+function historySeries(pts, field) {
+  var src = Array.isArray(pts) ? pts : []
+  var out = []
+  for (var i = 0; i < src.length; i++) {
+    if (!jhIsObject(src[i])) continue
+    out.push({ t: src[i].t, v: jhNum(src[i][field], null) })
+  }
+  return out
+}
+
+// Fixed slot window over a {t, v} series: each slot keeps the newest
+// value that fell inside it; slots without data stay null.
+function sparklineSlots(series, nowSec, windowSec, slots) {
+  var src = Array.isArray(series) ? series : []
+  var n = Math.max(1, jhNum(slots, 24))
+  var now = jhNum(nowSec, 0)
+  var start = now - Math.max(1, jhNum(windowSec, 86400))
+  var step = (now - start) / n
+  var out = new Array(n)
+  for (var w = 0; w < n; w++) out[w] = null
+  for (var i = 0; i < src.length; i++) {
+    var p = src[i]
+    if (!jhIsObject(p) || typeof p.t !== "number" || typeof p.v !== "number") continue
+    if (p.t < start || p.t > now) continue
+    var idx = Math.floor((p.t - start) / step)
+    if (idx > n - 1) idx = n - 1
+    out[idx] = p.v
+  }
+  return out
+}
+
 // -------------------------------------------------------- command builders
 
 // netrc content so curl authenticates without the token ever appearing in
@@ -629,6 +867,18 @@ if (typeof module !== "undefined" && module.exports) {
     parseUpdateCenter: parseUpdateCenter,
     assess: assess,
     diffEvents: diffEvents,
+    jobFolder: jobFolder,
+    isNeverGreen: isNeverGreen,
+    isDegrading: isDegrading,
+    recentBuilds: recentBuilds,
+    folderRollups: folderRollups,
+    historyAppendPt: historyAppendPt,
+    historyCompactPts: historyCompactPts,
+    historyAppendDisk: historyAppendDisk,
+    historyCompactDisk: historyCompactDisk,
+    historyCompactDisks: historyCompactDisks,
+    historySeries: historySeries,
+    sparklineSlots: sparklineSlots,
     buildNetrc: buildNetrc,
     buildCurlArgs: buildCurlArgs,
     buildActionCommand: buildActionCommand

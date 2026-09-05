@@ -10,25 +10,67 @@
       "_class": "com.cloudbees.hudson.plugins.folder.Folder",
       "name": "ci",
       "jobs": [
-        { "name": "checkout-service", "color": "blue" },
-        { "name": "unit-tests", "color": "blue" },
-        { "name": "package-artifacts", "color": "blue" },
-        { "name": "security-scan", "color": "blue" }
+        {
+          "name": "checkout-service",
+          "color": "blue",
+          "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+          "lastBuild": { "number": 104, "timestamp": 1788611400000, "duration": 203999, "result": "SUCCESS", "building": false },
+          "lastSuccessfulBuild": { "number": 104, "timestamp": 1788611400000, "duration": 203999 }
+        },
+        {
+          "name": "unit-tests",
+          "color": "blue",
+          "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+          "lastBuild": { "number": 212, "timestamp": 1788606000000, "duration": 95000, "result": "SUCCESS", "building": false },
+          "lastSuccessfulBuild": { "number": 212, "timestamp": 1788606000000, "duration": 95000 }
+        },
+        {
+          "name": "package-artifacts",
+          "color": "blue",
+          "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+          "lastBuild": { "number": 88, "timestamp": 1788595200000, "duration": 480000, "result": "SUCCESS", "building": false },
+          "lastSuccessfulBuild": { "number": 88, "timestamp": 1788595200000, "duration": 480000 }
+        },
+        {
+          "name": "security-scan",
+          "color": "blue",
+          "healthReport": [ { "score": 80, "description": "Build stability: 1 out of the last 5 builds failed." } ],
+          "lastBuild": { "number": 45, "timestamp": 1788614100000, "duration": 310000, "result": "SUCCESS", "building": false },
+          "lastSuccessfulBuild": { "number": 45, "timestamp": 1788614100000, "duration": 310000 }
+        }
       ]
     },
     {
       "_class": "com.cloudbees.hudson.plugins.folder.Folder",
       "name": "deploy",
       "jobs": [
-        { "name": "publish-docs", "color": "blue" },
-        { "name": "deploy-service", "color": "blue_anime" }
+        {
+          "name": "publish-docs",
+          "color": "blue",
+          "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+          "lastBuild": { "number": 61, "timestamp": 1788588000000, "duration": 60000, "result": "SUCCESS", "building": false },
+          "lastSuccessfulBuild": { "number": 61, "timestamp": 1788588000000, "duration": 60000 }
+        },
+        {
+          "name": "deploy-service",
+          "color": "blue_anime",
+          "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+          "lastBuild": { "number": 31, "timestamp": 1788616560000, "duration": 240000, "result": null, "building": true },
+          "lastSuccessfulBuild": { "number": 30, "timestamp": 1788520000000, "duration": 620000 }
+        }
       ]
     },
     {
       "_class": "com.cloudbees.hudson.plugins.folder.Folder",
       "name": "docs",
       "jobs": [
-        { "name": "docs-lint", "color": "yellow" }
+        {
+          "name": "docs-lint",
+          "color": "yellow",
+          "healthReport": [ { "score": 80, "description": "Build stability: 1 out of the last 5 builds failed." } ],
+          "lastBuild": { "number": 22, "timestamp": 1788609600000, "duration": 120000, "result": "UNSTABLE", "building": false },
+          "lastSuccessfulBuild": { "number": 21, "timestamp": 1788600000000, "duration": 118000 }
+        }
       ]
     },
     {
@@ -36,6 +78,12 @@
       "name": "archive",
       "jobs": []
     },
-    { "name": "ui-regression", "color": "blue" }
+    {
+      "name": "ui-regression",
+      "color": "blue",
+      "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+      "lastBuild": { "number": 12, "timestamp": 1788612000000, "duration": 750000, "result": "SUCCESS", "building": false },
+      "lastSuccessfulBuild": { "number": 12, "timestamp": 1788612000000, "duration": 750000 }
+    }
   ]
 }

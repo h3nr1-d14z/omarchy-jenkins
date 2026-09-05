@@ -516,6 +516,105 @@ for (let iter = 0; iter < 300; iter++) {
   ok(capped.overall.reasons.some(r => r.indexOf('50 jobs failing') === 0),
     'C5b reason keeps the true count', JSON.stringify(capped.overall.reasons));
 }
+
+// J*: job-depth views over the enriched leaf records.
+{
+  const api = { mode: 'NORMAL', quietingDown: false, jobs: [
+    { name: 'F', jobs: [
+      { name: 'a', color: 'red', healthReport: [{ score: 0, description: 'All recent builds failed.' }],
+        lastBuild: { number: 3, timestamp: 2000, duration: 90000, result: 'FAILURE', building: false },
+        lastSuccessfulBuild: null },
+      { name: 'b', color: 'blue', healthReport: [{ score: 60, description: '2 of 5 failed.' }],
+        lastBuild: { number: 7, timestamp: 1000, duration: 60000, result: 'SUCCESS', building: false },
+        lastSuccessfulBuild: { number: 7, timestamp: 1000, duration: 60000 } },
+      { name: 'c', color: 'blue' },
+      { name: 'd', color: 'red_anime',
+        lastBuild: { number: 9, timestamp: 3000, duration: 5000, result: null, building: true },
+        lastSuccessfulBuild: { number: 8, timestamp: 500, duration: 500 } }
+    ] },
+    { name: 'top', color: 'blue',
+      lastBuild: { number: 1, timestamp: 4000, duration: 1000, result: 'SUCCESS', building: false },
+      lastSuccessfulBuild: { number: 1, timestamp: 4000, duration: 1000 } }
+  ] };
+  const ctrl = Model.parseController(api, '1.0');
+  ok(ctrl.jobs.length === 5, 'J1 enriched leaves collected across levels', '');
+  ok(ctrl.jobs[0].name === 'F/a' && ctrl.jobs[0].health === 0
+    && ctrl.jobs[0].lastBuild.number === 3 && ctrl.jobs[0].lastSuccess === null,
+    'J2 extended fields parsed, folder-prefixed', JSON.stringify(ctrl.jobs[0]));
+  ok(ctrl.jobs[2].health === null && ctrl.jobs[2].lastBuild === null
+    && ctrl.jobs[2].lastSuccess === null && ctrl.jobs[2].healthDesc === '',
+    'J3 absent extended fields degrade to null', JSON.stringify(ctrl.jobs[2]));
+  ok(Model.isNeverGreen(ctrl.jobs[0]) && !Model.isNeverGreen(ctrl.jobs[1])
+    && !Model.isNeverGreen(ctrl.jobs[2]),
+    'J4 never-green = built but never succeeded', '');
+  ok(Model.isDegrading(ctrl.jobs[1]) && !Model.isDegrading(ctrl.jobs[0])
+    && !Model.isDegrading(ctrl.jobs[2]),
+    'J5 degrading = blue ball with health < 100', '');
+  const rb = Model.recentBuilds(ctrl.jobs, 10);
+  ok(rb.length === 4 && rb[0].name === 'top' && rb[0].timestamp === 4000
+    && rb[3].timestamp === 1000,
+    'J6 recent sorted newest-first', JSON.stringify(rb.map(b => b.name)));
+  ok(Model.recentBuilds(ctrl.jobs, 2).length === 2, 'J6b recent respects limit', '');
+  const flat = Model.parseController({ jobs: [{ name: 'x', color: 'blue' }] }, '1');
+  ok(Model.recentBuilds(flat.jobs, 10).length === 0
+    && Model.folderRollups(flat.jobs)[0].worstHealth === null,
+    'J7 flat listings yield empty views', '');
+  const ru = Model.folderRollups(ctrl.jobs);
+  ok(ru[0].folder === 'F' && ru[0].total === 4 && ru[0].failing === 2
+    && ru[0].neverGreen === 1 && ru[0].worstHealth === 0
+    && ru[1].folder === '' && ru[1].total === 1,
+    'J8 rollups grouped, worst-first', JSON.stringify(ru));
+  const sn = Model.assess(ctrl,
+    { total: 0, online: 0, offline: 0, temporarilyOffline: 0, nodes: [] },
+    { depth: 0, stuck: 0, items: [] },
+    { total: 0, updatesAvailable: 0, plugins: [] },
+    { restartRequired: false, jobs: [], warnings: [] }, {}, 10000);
+  ok(sn.controller.jobs.length === 5 && sn.controller.neverGreen === 1
+    && sn.controller.degrading === 1 && sn.controller.built24h === 4
+    && sn.controller.recent.length === 4 && sn.controller.rollups.length === 2,
+    'J9 assess exposes depth views on the snapshot',
+    JSON.stringify({ ng: sn.controller.neverGreen, dg: sn.controller.degrading, b24: sn.controller.built24h }));
+  const out = Model.assess(null, null, null, null, null, {}, 0);
+  ok(out.controller.jobs.length === 0 && out.controller.recent.length === 0
+    && out.controller.rollups.length === 0 && out.controller.built24h === 0,
+    'J10 unreachable snapshot keeps the depth fields present', '');
+}
+
+// H*: history compaction and sparkline windows.
+{
+  let pts = [];
+  for (let t = 0; t <= 3600; t += 30) pts = Model.historyAppendPt(pts, t, 50 + (t % 10), t % 5);
+  const c1 = Model.historyCompactPts(pts, 3600);
+  ok(c1.length === 121, 'H1 raw points inside the last hour kept verbatim', 'got ' + c1.length);
+  let pts2 = [];
+  for (let t = 0; t <= 172800; t += 30) pts2 = Model.historyAppendPt(pts2, t, 60, 1);
+  const c2 = Model.historyCompactPts(pts2, 172800);
+  // 121 raw hour points + (169200-86400)/300 = 276 buckets
+  ok(c2.length === 397, 'H2 24h window compacts to raw-hour + 5-min buckets', 'got ' + c2.length);
+  ok(c2[0].t >= 86400, 'H3 points older than 24h dropped', 'first t ' + c2[0].t);
+  ok(c2.some(p => p.t === 100170) && !c2.some(p => p.t === 99900),
+    'H4 pre-hour buckets keep the newest sample', '');
+  ok(JSON.stringify(Model.historyCompactPts(c2, 172800)) === JSON.stringify(c2),
+    'H5 compaction is idempotent', '');
+  let disks = Model.historyAppendDisk({}, 'n1', 100, 12.5);
+  disks = Model.historyAppendDisk(disks, 'n1', 130, 12.4);
+  disks = Model.historyAppendDisk(disks, 'n1', 1000, 12.0);
+  disks = Model.historyAppendDisk(disks, 'n2', 1000, null);
+  ok(disks.n1.length === 3 && disks.n2 === undefined,
+    'H6 disk appends per node, null readings skipped', JSON.stringify(Object.keys(disks)));
+  const cd = Model.historyCompactDisks(disks, 1000);
+  ok(cd.n1.length === 2 && cd.n1[0].t === 130 && cd.n1[1].t === 1000,
+    'H7 disk buckets (15 min) keep the newest', JSON.stringify(cd.n1));
+  const series = [{ t: 10, v: 1 }, { t: 20, v: 2 }, { t: 21, v: 3 }, { t: 100, v: 9 }];
+  const slots = Model.sparklineSlots(series, 100, 90, 3);
+  ok(slots.length === 3 && slots[0] === 3 && slots[1] === null && slots[2] === 9,
+    'H8 slots keep newest value per window, gaps null', JSON.stringify(slots));
+  const hs = Model.historySeries([{ t: 1, s: 66, q: 2 }, { t: 2, s: 0, q: 0 }], 's');
+  ok(hs[0].v === 66 && hs[1].v === 0,
+    'H9 historySeries maps the field, zero stays zero', JSON.stringify(hs));
+  ok(Model.sparklineSlots([{ t: 5, v: 5 }], 100, 90, 3).every(v => v === null),
+    'H10 out-of-window points ignored', '');
+}
 // ------------------------------------------------------------------- summary
 
 console.log(`property sweep: ${N} scenarios, ${checks} checks`);

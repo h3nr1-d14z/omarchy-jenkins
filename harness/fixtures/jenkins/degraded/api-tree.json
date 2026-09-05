@@ -10,26 +10,74 @@
       "_class": "com.cloudbees.hudson.plugins.folder.Folder",
       "name": "ci",
       "jobs": [
-        { "name": "checkout-service", "color": "blue" },
-        { "name": "unit-tests", "color": "blue" },
-        { "name": "package-artifacts", "color": "blue" },
-        { "name": "security-scan", "color": "blue" },
-        { "name": "integration-tests", "color": "red" }
+        {
+          "name": "checkout-service",
+          "color": "blue",
+          "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+          "lastBuild": { "number": 104, "timestamp": 1788611400000, "duration": 203999, "result": "SUCCESS", "building": false },
+          "lastSuccessfulBuild": { "number": 104, "timestamp": 1788611400000, "duration": 203999 }
+        },
+        {
+          "name": "unit-tests",
+          "color": "blue",
+          "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+          "lastBuild": { "number": 212, "timestamp": 1788606000000, "duration": 95000, "result": "SUCCESS", "building": false },
+          "lastSuccessfulBuild": { "number": 212, "timestamp": 1788606000000, "duration": 95000 }
+        },
+        {
+          "name": "package-artifacts",
+          "color": "blue",
+          "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+          "lastBuild": { "number": 88, "timestamp": 1788595200000, "duration": 480000, "result": "SUCCESS", "building": false },
+          "lastSuccessfulBuild": { "number": 88, "timestamp": 1788595200000, "duration": 480000 }
+        },
+        {
+          "name": "security-scan",
+          "color": "blue",
+          "healthReport": [ { "score": 80, "description": "Build stability: 1 out of the last 5 builds failed." } ],
+          "lastBuild": { "number": 45, "timestamp": 1788614100000, "duration": 310000, "result": "SUCCESS", "building": false },
+          "lastSuccessfulBuild": { "number": 45, "timestamp": 1788614100000, "duration": 310000 }
+        },
+        {
+          "name": "integration-tests",
+          "color": "red",
+          "healthReport": [ { "score": 0, "description": "Build stability: All recent builds failed." } ],
+          "lastBuild": { "number": 14, "timestamp": 1788534000000, "duration": 616907, "result": "FAILURE", "building": false },
+          "lastSuccessfulBuild": null
+        }
       ]
     },
     {
       "_class": "com.cloudbees.hudson.plugins.folder.Folder",
       "name": "deploy",
       "jobs": [
-        { "name": "publish-docs", "color": "blue" },
-        { "name": "deploy-service", "color": "red" }
+        {
+          "name": "publish-docs",
+          "color": "blue",
+          "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+          "lastBuild": { "number": 61, "timestamp": 1788588000000, "duration": 60000, "result": "SUCCESS", "building": false },
+          "lastSuccessfulBuild": { "number": 61, "timestamp": 1788588000000, "duration": 60000 }
+        },
+        {
+          "name": "deploy-service",
+          "color": "red",
+          "healthReport": [ { "score": 40, "description": "Build stability: 3 out of the last 5 builds failed." } ],
+          "lastBuild": { "number": 9, "timestamp": 1788598800000, "duration": 300000, "result": "FAILURE", "building": false },
+          "lastSuccessfulBuild": { "number": 6, "timestamp": 1788300000000, "duration": 290000 }
+        }
       ]
     },
     {
       "_class": "com.cloudbees.hudson.plugins.folder.Folder",
       "name": "docs",
       "jobs": [
-        { "name": "docs-lint", "color": "yellow" }
+        {
+          "name": "docs-lint",
+          "color": "yellow",
+          "healthReport": [ { "score": 60, "description": "Build stability: 2 out of the last 5 builds failed." } ],
+          "lastBuild": { "number": 22, "timestamp": 1788609600000, "duration": 120000, "result": "UNSTABLE", "building": false },
+          "lastSuccessfulBuild": { "number": 21, "timestamp": 1788600000000, "duration": 118000 }
+        }
       ]
     },
     {
@@ -37,6 +85,12 @@
       "name": "archive",
       "jobs": []
     },
-    { "name": "nightly-e2e", "color": "blue_anime" }
+    {
+      "name": "nightly-e2e",
+      "color": "blue_anime",
+      "healthReport": [ { "score": 100, "description": "Build stability: No recent builds failed." } ],
+      "lastBuild": { "number": 7, "timestamp": 1788616560000, "duration": 240000, "result": null, "building": true },
+      "lastSuccessfulBuild": { "number": 6, "timestamp": 1788500000000, "duration": 900000 }
+    }
   ]
 }

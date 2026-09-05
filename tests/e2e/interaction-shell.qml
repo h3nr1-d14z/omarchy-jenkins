@@ -131,19 +131,52 @@ ShellRoot {
     }
   }
 
+  // Collects every Text's content in the panel tree — used to prove the
+  // Activity feed actually rendered rows from the extended tree data.
+  function scanTexts(item, out) {
+    for (var i = 0; i < item.children.length; i++) {
+      var c = item.children[i]
+      if (c.text !== undefined) out.push(String(c.text))
+      if (c.children && c.children.length > 0) scanTexts(c, out)
+    }
+    return out
+  }
+
+  property var activityProbe: null
+  property var tabHeights: ({ nodes: 0, queue: 0, overview: 0, jobs: 0, activity: 0 })
+
   Timer {
     id: clickTimer
-    interval: 600
+    interval: 400
     repeat: true
     property int step: 0
     onTriggered: {
       step += 1
+      // Heights are read at the START of each step, after the previous
+      // tab's binding has settled (400ms), and keyed by that tab.
       if (step === 1) {
+        tabHeights.nodes = Math.round(panel.implicitHeight)
         clickTab("Queue")
         clickButtonByText("Cancel")       // first queue item (id 201)
       } else if (step === 2) {
+        tabHeights.queue = Math.round(panel.implicitHeight)
         clickTab("Overview")
         clickButtonByText("Quiet down")
+      } else if (step === 3) {
+        tabHeights.overview = Math.round(panel.implicitHeight)
+        clickTab("Jobs")
+      } else if (step === 4) {
+        tabHeights.jobs = Math.round(panel.implicitHeight)
+        clickTab("Activity")
+      } else if (step === 5) {
+        tabHeights.activity = Math.round(panel.implicitHeight)
+        var texts = scanTexts(panel, [])
+        activityProbe = {
+          tab: panel.activeTab,
+          height: tabHeights.activity,
+          sawBuilding: texts.some(function (t) { return t.indexOf(" so far") !== -1 }),
+          sawRecent: texts.some(function (t) { return t.indexOf("#9") !== -1 })
+        }
       } else {
         stop()
       }
@@ -159,7 +192,9 @@ ShellRoot {
         actionMessage: service.actionMessage,
         state: service.state,
         queueDepth: service.snapshot ? service.snapshot.queue.depth : -1,
-        activeTab: panel.activeTab
+        activeTab: panel.activeTab,
+        activityProbe: activityProbe,
+        tabHeights: tabHeights
       }))
       Qt.quit()
     }

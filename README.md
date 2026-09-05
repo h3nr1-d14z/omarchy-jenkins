@@ -13,6 +13,13 @@ watches a Jenkins CI controller and reports its health in the bar:
   restart-required, plugin updates). Each category can be toggled off.
 - **Safe actions** from the panel: quiet-down toggle, cancel a queue item,
   and take a node offline / back online.
+- **Job depth** from a single tree query: Jenkins health scores, last
+  build (result/duration/age), never-green detection, folder rollups,
+  and an Activity feed of the most recent builds across the catalog.
+- **Trend history** persisted across restarts (`~/.cache/jenkins-health/`
+  history.json, mode 600): 24h score/queue sparklines on Overview and a
+  per-node disk trend on the Nodes tab. Raw samples for the last hour,
+  then bucketed; everything older than 24h is dropped.
 
 Credentials never appear in a process argument list: the API token is read
 from a file with mode 600 and handed to `curl` through a generated netrc
@@ -33,8 +40,9 @@ file (also mode 600).
    `jenkinsUrl`, `jenkinsUser`, and (optionally) `tokenFile` in the widget
    settings of `~/.config/omarchy/shell.json`.
 
-The bar chip shows the health score; click it for the detail panel,
-middle-click to refresh immediately.
+The bar chip shows the health score; click it for the detail panel
+(Overview, Nodes, Jobs, Activity, Queue), middle-click to refresh
+immediately.
 
 ## Settings
 
