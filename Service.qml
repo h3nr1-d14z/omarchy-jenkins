@@ -111,7 +111,14 @@ Item {
     property int pollGeneration: -1
 
     readonly property var steps: [
-      { endpoint: "/api/json", key: "api" },
+      // Tree query: jobs two folders deep with colors (a plain /api/json
+      // lists only top-level folders, whose color is null — on controllers
+      // that organize jobs in folders this keeps the failures feed real).
+      // Model.parseController flattens the nested jobs array; the scalar
+      // fields it parses are requested alongside.
+      // Brackets are percent-encoded: curl treats literal [] in a URL as
+      // glob ranges (exit 3) unless --globoff; Jenkins accepts %5B/%5D.
+      { endpoint: "/api/json?tree=jobs%5Bname,color,jobs%5Bname,color,jobs%5Bname,color%5D%5D%5D,mode,quietingDown,useCrumbs,useSecurity,numExecutors", key: "api" },
       { endpoint: "/computer/api/json", key: "computer" },
       { endpoint: "/queue/api/json", key: "queue" },
       { endpoint: "/pluginManager/api/json", key: "plugins" },

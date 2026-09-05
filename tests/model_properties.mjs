@@ -344,6 +344,150 @@ for (let iter = 0; iter < N; iter++) {
   }
 }
 
+// ------------------------------------------- nested-folder flattening (N*)
+// The tree query returns folders with a `jobs` array; parseController must
+// flatten to runnable leaves, prefix folder names, drop empty folders, and
+// keep flat listings identity — the frozen harness fixtures are flat, so
+// these invariants carry the nested contract.
+
+function genNestedApi() {
+  const top = [];
+  const flatEquiv = [];
+  let folders = 0, leaves = 0, emptyFolders = 0, grandchildren = 0;
+  const n = ri(1, 6);
+  for (let f = 0; f < n; f++) {
+    if (chance(0.2)) {
+      // plain top-level runnable job (mixed shape, like a controller with
+      // both folders and loose jobs)
+      const j = { name: 'loose-' + f, color: pick(COLORS) };
+      top.push(structuredClone(j));
+      flatEquiv.push(structuredClone(j));
+      leaves++;
+      continue;
+    }
+    folders++;
+    const kids = [];
+    const k = ri(0, 5);
+    if (k === 0) emptyFolders++;
+    for (let i = 0; i < k; i++) {
+      if (chance(0.2)) {
+        // nested subfolder one more level down
+        const gk = ri(0, 3);
+        const gkids = [];
+        for (let g = 0; g < gk; g++) {
+          const gj = { name: 'g-' + f + '-' + i + '-' + g, color: pick(COLORS) };
+          gkids.push(structuredClone(gj));
+          flatEquiv.push({ name: 'folder-' + f + '/sub-' + i + '/' + gj.name, color: gj.color });
+          leaves++;
+          grandchildren++;
+        }
+        kids.push({ name: 'sub-' + i, color: null, jobs: gkids });
+      } else {
+        const j = { name: 'leaf-' + f + '-' + i, color: pick(COLORS) };
+        kids.push(structuredClone(j));
+        flatEquiv.push({ name: 'folder-' + f + '/' + j.name, color: j.color });
+        leaves++;
+      }
+    }
+    top.push({ name: 'folder-' + f, color: null, jobs: kids });
+  }
+  return {
+    api: {
+      mode: 'NORMAL', quietingDown: false, useCrumbs: true,
+      useSecurity: true, numExecutors: ri(0, 5), jobs: top,
+    },
+    flatEquiv, leaves, folders, emptyFolders, grandchildren,
+  };
+}
+
+for (let iter = 0; iter < 300; iter++) {
+  const g = genNestedApi();
+  const ctx = 'nested' + iter;
+  let controller;
+  try {
+    controller = Model.parseController(g.api, '2.460.1');
+  } catch (e) {
+    ok(false, 'N1 flatten throws', ctx + ' ' + e.message);
+    continue;
+  }
+  ok(controller.jobs.length === g.leaves, 'N2 leaf count preserved', ctx
+    + ' got=' + controller.jobs.length + ' want=' + g.leaves);
+  ok(controller.jobs.length === g.flatEquiv.length, 'N2 equiv length', ctx);
+  let namesMatch = true;
+  for (let i = 0; i < g.flatEquiv.length; i++) {
+    if (controller.jobs[i].name !== g.flatEquiv[i].name
+      || controller.jobs[i].color !== g.flatEquiv[i].color) { namesMatch = false; break; }
+  }
+  ok(namesMatch, 'N3 names/colors match pre-flattened equivalent (folder-prefixed)', ctx);
+  ok(controller.jobs.every(j => !j.name.startsWith('sub-') || j.name.includes('/')),
+    'N4 folder entries never surface bare', ctx);
+  ok(controller.jobs.filter(j => j.name.startsWith('folder-') && !j.name.includes('/')).length === 0,
+    'N4 top folders never surface', ctx);
+
+  // assess equivalence: the snapshot from nested input must equal the one
+  // from the manually-flattened input (failures feed, score, everything).
+  const cfg = genConfig();
+  const flatApi = { ...g.api, jobs: structuredClone(g.flatEquiv) };
+  const flatCtrl = Model.parseController(flatApi, '2.460.1');
+  const computer = genComputer();
+  const queue = genQueue(NOW);
+  const plugins = genPlugins();
+  const uc = genUc();
+  const sNest = Model.assess(controller, Model.parseNodes(computer), Model.parseQueue(queue),
+    Model.parsePlugins(plugins), Model.parseUpdateCenter(uc), cfg, NOW);
+  const sFlat = Model.assess(flatCtrl, Model.parseNodes(computer), Model.parseQueue(queue),
+    Model.parsePlugins(plugins), Model.parseUpdateCenter(uc), cfg, NOW);
+  ok(sNest.overall.score === sFlat.overall.score && sNest.overall.level === sFlat.overall.level,
+    'N5 assess(score/level) identical nested vs flattened', ctx);
+  ok(JSON.stringify(sNest.jobs) === JSON.stringify(sFlat.jobs), 'N5 assess jobs identical', ctx);
+}
+
+// N6 real-world shape regression: folders-with-children, an empty folder,
+// and every color class — the real-world folder-organized controller profile.
+{
+  const api = {
+    mode: 'NORMAL', quietingDown: false, useCrumbs: true, useSecurity: true, numExecutors: 0,
+    jobs: [
+      { name: 'MobileGames', color: null, jobs: [
+        { name: 'Puzzle3D-Develop', color: 'red' },
+        { name: 'TemplateJob', color: 'notbuilt' },
+        { name: 'Puzzle3D-Creative', color: 'disabled' },
+      ] },
+      { name: 'EmptyFolder', color: null, jobs: [] },
+      { name: 'Delivery', color: null, jobs: [
+        { name: 'IosApp', color: 'red' },
+        { name: 'NativeApp', color: 'blue' },
+      ] },
+      { name: 'LooseJob', color: 'yellow' },
+    ],
+  };
+  const ctrl = Model.parseController(api, '2.568.2');
+  ok(ctrl.jobs.length === 6, 'N6 leaf count on real-world shape', 'got ' + ctrl.jobs.length);
+  const reds = ctrl.jobs.filter(j => j.color === 'red').map(j => j.name).sort();
+  ok(JSON.stringify(reds) === JSON.stringify(['Delivery/IOS', 'MobileGames/Puzzle3D-Develop']),
+    'N6 folder-prefixed failing jobs', JSON.stringify(reds));
+  ok(ctrl.jobs.some(j => j.name === 'LooseJob' && j.color === 'yellow'),
+    'N6 loose top-level job survives', '');
+}
+
+// N7 truncated folder: a folder deeper than the tree query's depth comes
+// back with color null and NO `jobs` attribute — it must surface as a
+// neutral leaf (not crash, not count as failing), and sibling leaves stay
+// intact.
+{
+  const api = {
+    jobs: [
+      { name: 'Deep', color: null, jobs: [
+        { name: 'mid', color: null }, // folder beyond tree depth
+        { name: 'real', color: 'red' },
+      ] },
+    ],
+  };
+  const t = Model.parseController(api, '1.0');
+  ok(t.jobs.length === 2, 'N7 truncated folder surfaces as leaf', 'got ' + t.jobs.length);
+  ok(t.jobs.some(j => j.name === 'Deep/mid' && j.color === ''), 'N7 truncated folder neutral color', '');
+  ok(t.jobs.filter(j => j.color === 'red').length === 1, 'N7 sibling leaf unaffected', '');
+}
 // ------------------------------------------------------------------- summary
 
 console.log(`property sweep: ${N} scenarios, ${checks} checks`);

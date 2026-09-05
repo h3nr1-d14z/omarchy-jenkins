@@ -369,9 +369,9 @@ run_widget_phase() {
 # ---- run --------------------------------------------------------------------
 
 run_scenario healthy \
-  '(.state == "ok") and (.score == 100) and (.version == "2.440.3") and (.nodes == 6) and (.queueDepth == 2) and (.controllerStatus == "up")'
+  '(.state == "ok") and (.score == 100) and (.version == "2.440.3") and (.nodes == 6) and (.queueDepth == 2) and (.controllerStatus == "up") and (.failing == 0)'
 run_scenario degraded \
-  '(.state == "warn") and (.score == 60) and (.nodes == 6) and (.queueDepth == 12) and (.controllerStatus == "up")'
+  '(.state == "warn") and (.score == 60) and (.nodes == 6) and (.queueDepth == 12) and (.controllerStatus == "up") and (.failing == 2) and (.firstFailing == "ci/integration-tests")'
 run_scenario outage \
   '(.state == "critical") and (.score == 0) and (.controllerStatus == "unreachable")'
 

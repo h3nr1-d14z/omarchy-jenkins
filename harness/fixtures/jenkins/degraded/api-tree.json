@@ -1,0 +1,42 @@
+{
+  "_class": "hudson.model.Hudson",
+  "mode": "NORMAL",
+  "quietingDown": false,
+  "useCrumbs": true,
+  "useSecurity": true,
+  "numExecutors": 5,
+  "jobs": [
+    {
+      "_class": "com.cloudbees.hudson.plugins.folder.Folder",
+      "name": "ci",
+      "jobs": [
+        { "name": "checkout-service", "color": "blue" },
+        { "name": "unit-tests", "color": "blue" },
+        { "name": "package-artifacts", "color": "blue" },
+        { "name": "security-scan", "color": "blue" },
+        { "name": "integration-tests", "color": "red" }
+      ]
+    },
+    {
+      "_class": "com.cloudbees.hudson.plugins.folder.Folder",
+      "name": "deploy",
+      "jobs": [
+        { "name": "publish-docs", "color": "blue" },
+        { "name": "deploy-service", "color": "red" }
+      ]
+    },
+    {
+      "_class": "com.cloudbees.hudson.plugins.folder.Folder",
+      "name": "docs",
+      "jobs": [
+        { "name": "docs-lint", "color": "yellow" }
+      ]
+    },
+    {
+      "_class": "com.cloudbees.hudson.plugins.folder.Folder",
+      "name": "archive",
+      "jobs": []
+    },
+    { "name": "nightly-e2e", "color": "blue_anime" }
+  ]
+}

@@ -39,7 +39,21 @@ function jhJoinUrl(base, endpoint) {
   return b + e
 }
 
-// ---------------------------------------------------------------- parsing
+
+// Recursive job collector for nested folder listings (see parseController).
+function jhCollectJobs(rawJobs, prefix, out) {
+  for (var i = 0; i < rawJobs.length; i++) {
+    var j = rawJobs[i]
+    if (!jhIsObject(j)) continue
+    var name = jhStr(j.name, "")
+    var full = prefix ? prefix + "/" + name : name
+    if (Array.isArray(j.jobs)) {
+      jhCollectJobs(j.jobs, full, out)
+    } else {
+      out.push({ name: full, color: jhStr(j.color, "") })
+    }
+  }
+}
 
 function parseController(apiJson, xJenkinsHeader) {
   if (!jhIsObject(apiJson)) {
@@ -55,14 +69,14 @@ function parseController(apiJson, xJenkinsHeader) {
   }
 
   var header = typeof xJenkinsHeader === "string" ? xJenkinsHeader.trim() : ""
+  // Collect jobs from a (possibly nested) Jenkins listing. The tree query
+  // returns folders with a `jobs` array (empty or populated); runnable jobs
+  // carry a `color`. Folder names prefix their children ("Folder/Job") so
+  // failure events stay unambiguous when the same job name exists in
+  // several folders. Flat listings (no `jobs` attr) pass through identity.
   var jobs = []
   var rawJobs = Array.isArray(apiJson.jobs) ? apiJson.jobs : []
-  for (var i = 0; i < rawJobs.length; i++) {
-    var j = rawJobs[i]
-    if (jhIsObject(j)) {
-      jobs.push({ name: jhStr(j.name, ""), color: jhStr(j.color, "") })
-    }
-  }
+  jhCollectJobs(rawJobs, "", jobs)
 
   return {
     version: header || "Unknown",

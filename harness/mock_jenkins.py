@@ -63,7 +63,17 @@ class MockJenkinsHandler(BaseHTTPRequestHandler):
             print(f"{self.address_string()} GET {path} -> 200 (crumb)", flush=True)
             return
 
-        fixture = ROUTE_TABLE.get(path)
+        # The plugin's controller fetch uses a tree query (nested jobs with
+        # colors). Serve the nested-shaped fixture of the same world when
+        # asked; plain /api/json keeps the flat fixture.
+        if (
+            path == "/api/json"
+            and "tree=" in self.path
+            and (FIXTURES_ROOT / SCENARIO / "api-tree.json").exists()
+        ):
+            fixture = "api-tree.json"
+        else:
+            fixture = ROUTE_TABLE.get(path)
         if fixture is None:
             self._reply(404, b"Not Found\n", "text/plain")
             print(f"{self.address_string()} GET {path} -> 404", flush=True)
