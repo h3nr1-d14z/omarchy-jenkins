@@ -45,6 +45,7 @@ ln -s /usr/share/omarchy/shell/Ui "$E2E_DIR/Ui"
 ln -s /usr/share/omarchy/shell/Commons "$E2E_DIR/Commons"
 cp "$ROOT/tests/e2e/shell.qml" "$E2E_DIR/shell.qml"
 cp "$ROOT/tests/e2e/widget-shell.qml" "$E2E_DIR/widget-shell.qml"
+cp "$ROOT/tests/e2e/render-shell.qml" "$E2E_DIR/render-shell.qml"
 
 start_mock() {
   [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
@@ -255,6 +256,57 @@ run_notify_phase
 run_ipc_phase
 run_widget_phase
 
+# ---- phase 5: visual render --------------------------------------------------
+# Draws the chip and panel content in a layer-shell window and captures
+# exactly that surface (namespace jh-e2e-render) with grim — the user's
+# desktop is never included. The automated assertions are structural
+# (surface found, non-blank capture); the visual verdict comes from
+# inspecting the saved capture.
+
+run_render_phase() {
+  if ! command -v grim >/dev/null 2>&1; then
+    echo "SKIP: render phase (grim not found)"
+    return
+  fi
+  start_mock healthy
+  JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
+    qs -p "$E2E_DIR/render-shell.qml" >"$TOKEN_DIR/render.log" 2>&1 &
+  QS_PID=$!
+  sleep 4
+
+  local png="$TOKEN_DIR/render.png" geo
+  geo=$(hyprctl layers -j | jq -r \
+    '[.[] | .levels | to_entries[] | .value[]? | select(.namespace == "jh-e2e-render")]
+     | .[0] | "\(.x),\(.y) \(.w)x\(.h)"' 2>/dev/null || true)
+  if [ -n "$geo" ] && [ "$geo" != "null" ]; then
+    grim -g "$geo" "$png" 2>>"$TOKEN_DIR/render.log" || true
+  fi
+  kill "$QS_PID" 2>/dev/null || true
+  wait "$QS_PID" 2>/dev/null || true
+  QS_PID=""
+  kill "$MOCK_PID" 2>/dev/null || true
+  MOCK_PID=""
+
+  echo "--- render phase (geo='$geo'):" >&2
+  cat "$TOKEN_DIR/render.log" >&2
+
+  if [ ! -s "$png" ]; then
+    echo "FAIL: render phase — no capture (surface not found or grim failed)"
+    FAILED=1
+    return
+  fi
+  local size
+  size=$(stat -c %s "$png")
+  if [ "$size" -lt 20000 ]; then
+    echo "FAIL: render phase — capture looks blank (${size}B)"
+    FAILED=1
+    return
+  fi
+  cp "$png" /tmp/jenkins-health-render.png
+  echo "PASS: render phase (${size}B capture, saved /tmp/jenkins-health-render.png)"
+}
+
+run_render_phase
 if [ "$FAILED" = 1 ]; then
   echo "E2E-FAILED"
   exit 1
