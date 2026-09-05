@@ -204,6 +204,84 @@ EOF
   fi
   echo "PASS: notification flow (5 edge-triggered events, no duplicates, no controller flap)"
 }
+# ---- phase 2b: recovery + controller transitions -----------------------------
+# Completes the live notification matrix: recovery events (node-online,
+# job-recovered, queue-clear) and controller transitions (down, up) —
+# previously verified only in unit tests. Polls are driven EXPLICITLY via
+# the refresh IPC after each mock switch, so no poll can land inside a
+# switch window. Expected: exactly 5 notifications — 3 recovery (info),
+# controller-down (critical), controller-up (info).
+
+run_recovery_phase() {
+  local shim_dir notify_log
+  shim_dir=$(mktemp -d)
+  mkdir -p "$shim_dir/bin"
+  cat > "$shim_dir/bin/omarchy-notification-send" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$JH_NOTIFY_LOG"
+EOF
+  chmod +x "$shim_dir/bin/omarchy-notification-send"
+  notify_log="$shim_dir/notifications.log"
+  : > "$notify_log"
+
+  start_mock degraded
+  JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
+    JH_NOTIFY_LOG="$notify_log" \
+    JH_E2E_NOTIFY=1 JH_E2E_SHIM_DIR="$shim_dir" \
+    JH_E2E_REFRESH=30 JH_E2E_QUIT_MS=30000 \
+    qs -p "$E2E_DIR" >"$shim_dir/qs.log" 2>&1 &
+  QS_PID=$!
+  sleep 2.5   # first poll (~1.5s) takes the degraded baseline (no events)
+
+  local refresh_out
+  start_mock healthy
+  sleep 0.5
+  refresh_out=$(qs ipc --pid "$QS_PID" call jenkins-health refresh 2>&1 || true)
+  sleep 2     # reauth + poll + 3 recovery events
+
+  start_mock outage
+  sleep 0.5
+  refresh_out=$(qs ipc --pid "$QS_PID" call jenkins-health refresh 2>&1 || true)
+  sleep 2     # controller-down
+
+  start_mock healthy
+  sleep 0.5
+  refresh_out=$(qs ipc --pid "$QS_PID" call jenkins-health refresh 2>&1 || true)
+  sleep 2     # controller-up
+
+  kill_wait "$QS_PID"
+  wait "$QS_PID" 2>/dev/null || true
+  QS_PID=""
+  kill_wait "$MOCK_PID"
+  MOCK_PID=""
+
+  echo "--- recovery phase notifications:" >&2
+  cat "$notify_log" >&2
+  # (cleanup happens in the assertions' wake via the EXIT trap: SHIM_DIR)
+  SHIM_DIR="$shim_dir"
+
+  local count
+  count=$(wc -l < "$notify_log")
+  if [ "$count" -ne 5 ]; then
+    echo "FAIL: recovery phase — expected 5 notifications, got $count (see stderr)"
+    FAILED=1
+    return
+  fi
+  local want
+  for want in "Jenkins node online" "Jenkins jobs recovered" "Jenkins queue clear" "Jenkins controller down" "Jenkins controller is back up"; do
+    if [ "$(grep -c "$want" "$notify_log")" != "1" ]; then
+      echo "FAIL: recovery phase — '$want' not present exactly once (see stderr)"
+      FAILED=1
+      return
+    fi
+  done
+  if [ "$(grep -c 'controller down.*-u critical\|-u critical.*controller down' "$notify_log")" != "1" ]; then
+    echo "FAIL: recovery phase — controller-down is not critical urgency (see stderr)"
+    FAILED=1
+    return
+  fi
+  echo "PASS: recovery + controller transitions (node-online, job-recovered, queue-clear, controller-down critical, controller-up)"
+}
 
 # ---- phase 3: IPC surface ---------------------------------------------------
 
@@ -296,6 +374,7 @@ run_scenario outage \
   '(.state == "critical") and (.score == 0) and (.controllerStatus == "unreachable")'
 
 run_notify_phase
+run_recovery_phase
 run_ipc_phase
 run_widget_phase
 
@@ -346,8 +425,23 @@ run_render_phase() {
     FAILED=1
     return
   fi
+  # Semantics guard: the service inside the render instance must report
+  # the scenario's state — PNG sizes alone can differ on noise (the v16
+  # stray-mock incident produced three healthy renders that passed a
+  # size-based differ).
+  local want_state
+  case "$scenario" in
+    healthy) want_state="ok" ;;
+    degraded) want_state="warn" ;;
+    outage) want_state="critical" ;;
+  esac
+  if ! grep -q "JH-E2E-R {.*\"state\":\"$want_state\"" "$TOKEN_DIR/render.log"; then
+    echo "FAIL: render phase $scenario — service state is not $want_state (see stderr)"
+    FAILED=1
+    return
+  fi
   cp "$out_png" "/tmp/jenkins-health-render-$scenario.png"
-  echo "PASS: render phase $scenario (${size}B, saved /tmp/jenkins-health-render-$scenario.png)"
+  echo "PASS: render phase $scenario (state $want_state, ${size}B, saved /tmp/jenkins-health-render-$scenario.png)"
 }
 
 run_render_both_phases() {

@@ -87,7 +87,11 @@ Item {
           spacing: Style.space(2)
 
           Text {
-            text: root.ctrl ? "Jenkins " + (root.ctrl.version || "?") : "Jenkins"
+            // Show the version only when it is a real one; during an
+            // outage there is no version to show and a bare "Jenkins"
+            // reads far better than "Jenkins ?".
+            text: root.ctrl && root.ctrl.version && root.ctrl.version !== "Unknown"
+              ? "Jenkins " + root.ctrl.version : "Jenkins"
             color: root.foreground
             font.family: Style.font.family
             font.pixelSize: Style.font.title
