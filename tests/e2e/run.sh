@@ -52,6 +52,7 @@ cp "$ROOT/tests/e2e/action-shell.qml" "$E2E_DIR/action-shell.qml"
 cp "$ROOT/tests/e2e/lifecycle-shell.qml" "$E2E_DIR/lifecycle-shell.qml"
 cp "$ROOT/tests/e2e/auth-shell.qml" "$E2E_DIR/auth-shell.qml"
 cp "$ROOT/tests/e2e/firstrun-shell.qml" "$E2E_DIR/firstrun-shell.qml"
+cp "$ROOT/tests/e2e/interaction-shell.qml" "$E2E_DIR/interaction-shell.qml"
 
 # Kill a background server and WAIT for it to die. Python's
 # ThreadingHTTPServer can survive SIGTERM (server_close blocks on
@@ -445,6 +446,130 @@ run_render_phase() {
   echo "PASS: render phase $scenario (state $want_state, ${size}B, saved /tmp/jenkins-health-render-$scenario.png)"
 }
 
+# ---- phase 10: panel button click-through --------------------------------------
+# Clicks the Panel's real action buttons (signals emitted programmatically)
+# and asserts the POSTs — closing the last wiring link: button labels <->
+# action handlers. A swapped ternary ("Bring online" performing
+# nodeOffline) would pass every other test and fail only here.
+
+run_interaction_phase() {
+  local srv log
+  srv=$(mktemp)
+  log=$(mktemp)
+  cat > "$srv" <<'PYEOF2'
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+port = int(sys.argv[1])
+log = sys.argv[2]
+fixtures = Path(sys.argv[3])
+
+routes = {
+    "/api/json": "api.json",
+    "/computer/api/json": "computer.json",
+    "/queue/api/json": "queue.json",
+    "/pluginManager/api/json": "pluginManager.json",
+    "/updateCenter/api/json": "updateCenter.json",
+}
+
+
+class H(BaseHTTPRequestHandler):
+    def _reply(self, code, body, ctype="application/json"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/crumbIssuer/api/json":
+            self._reply(200, b'{"crumb":"action-crumb-1","crumbRequestField":"Jenkins-Crumb"}')
+        elif path in routes:
+            self._reply(200, (fixtures / routes[path]).read_bytes())
+        else:
+            self._reply(404, b'{}')
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        if n:
+            self.rfile.read(n)
+        with open(log, "a") as f:
+            f.write("POST %s\n" % self.path)
+            f.write("crumb: %s\n" % self.headers.get("Jenkins-Crumb", ""))
+        self._reply(200, b'{}')
+
+    def log_message(self, *a):
+        pass
+
+
+HTTPServer(("127.0.0.1", port), H).serve_forever()
+PYEOF2
+  python3 "$srv" 28889 "$log" "$ROOT/harness/fixtures/jenkins/degraded" >/dev/null 2>&1 &
+  ACTION_PID=$!
+  local i ready=0
+  for i in $(seq 1 30); do
+    if curl -fsS "http://127.0.0.1:28889/queue/api/json" 2>/dev/null | jq -e '.items | length == 12' >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 0.1
+  done
+  if [ "$ready" != "1" ]; then
+    echo "FAIL: interaction — fixture server not ready (see stderr)"
+    FAILED=1
+    kill_wait "$ACTION_PID"
+    ACTION_PID=""
+    rm -f "$srv" "$log"
+    return
+  fi
+
+  JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
+    qs -p "$E2E_DIR/interaction-shell.qml" >"$TOKEN_DIR/interaction.log" 2>&1 || true
+  kill_wait "$ACTION_PID"
+  ACTION_PID=""
+
+  echo "--- interaction phase:" >&2
+  cat "$TOKEN_DIR/interaction.log" >&2
+  echo "--- interaction server log:" >&2
+  cat "$log" >&2
+
+  if grep -q "JH-E2E-I-MISSING" "$TOKEN_DIR/interaction.log"; then
+    echo "FAIL: interaction — a button was not found (see stderr)"
+    FAILED=1
+    rm -f "$srv" "$log"
+    return
+  fi
+  local d
+  d=$(grep -o 'JH-E2E-I {.*}' "$TOKEN_DIR/interaction.log" | tail -n1 || true)
+  if [ -z "$d" ] || ! printf '%s' "${d#JH-E2E-I }" | jq -e '(.actionMessage == "action sent") and (.queueDepth == 12)' >/dev/null 2>&1; then
+    echo "FAIL: interaction — dump wrong: $d"
+    FAILED=1
+    rm -f "$srv" "$log"
+    return
+  fi
+  local posts crumbs
+  posts=$(grep -c "^POST " "$log" || true)
+  crumbs=$(grep -c "crumb: action-crumb-1" "$log" || true)
+  if [ "$posts" -ne 3 ] || [ "$crumbs" -ne 3 ]; then
+    echo "FAIL: interaction — expected 3 POSTs with crumbs, got $posts/$crumbs (see stderr)"
+    FAILED=1
+    rm -f "$srv" "$log"
+    return
+  fi
+  for want in "POST /computer/build-agent-03/doChangeOffline?offline=false" "POST /queue/cancelItem?id=201" "POST /quietDown"; do
+    if ! grep -qF "$want" "$log"; then
+      echo "FAIL: interaction — missing '$want' (see stderr)"
+      FAILED=1
+      rm -f "$srv" "$log"
+      return
+    fi
+  done
+  rm -f "$srv" "$log"
+  echo "PASS: panel click-through (Bring online → nodeOnline, Cancel → cancelItem?id=201, Quiet down → quietDown)"
+}
+
 run_render_both_phases() {
   if ! command -v grim >/dev/null 2>&1; then
     echo "SKIP: render phases (grim not found)"
@@ -828,6 +953,7 @@ run_crumbless_phase
 run_lifecycle_phase
 run_auth_phase
 run_firstrun_phase
+run_interaction_phase
 
 if [ "$FAILED" = 1 ]; then
   echo "E2E-FAILED"
