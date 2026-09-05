@@ -364,6 +364,11 @@ run_widget_phase() {
     FAILED=1
     return
   fi
+  if ! printf '%s' "${w1#JH-E2E-W1 }" | jq -e '(.registered == 1) and (.widgetState == "ok") and (.chipText == "100") and (.serviceState == "ok")' >/dev/null 2>&1; then
+    echo "FAIL: widget load — W1 invariant not met: $w1"
+    FAILED=1
+    return
+  fi
 
   if ! printf '%s' "${w3#JH-E2E-W3 }" | jq -e '(.sawOpen == true) and (.closedCleanly == true) and (.reopened == true)' >/dev/null 2>&1; then
     echo "FAIL: widget load — dismissal cycle broke the chip (W3): $w3"
