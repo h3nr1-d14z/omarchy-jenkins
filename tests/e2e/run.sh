@@ -268,22 +268,23 @@ run_widget_phase
 # inspecting the saved capture.
 
 run_render_phase() {
+  local scenario="$1" out_png="$2"
   if ! command -v grim >/dev/null 2>&1; then
     echo "SKIP: render phase (grim not found)"
     return
   fi
-  start_mock healthy
+  start_mock "$scenario"
   JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \
     qs -p "$E2E_DIR/render-shell.qml" >"$TOKEN_DIR/render.log" 2>&1 &
   QS_PID=$!
   sleep 4
 
-  local png="$TOKEN_DIR/render.png" geo
+  local geo
   geo=$(hyprctl layers -j | jq -r \
     '[.[] | .levels | to_entries[] | .value[]? | select(.namespace == "jh-e2e-render")]
      | .[0] | "\(.x),\(.y) \(.w)x\(.h)"' 2>/dev/null || true)
   if [ -n "$geo" ] && [ "$geo" != "null" ]; then
-    grim -g "$geo" "$png" 2>>"$TOKEN_DIR/render.log" || true
+    grim -g "$geo" "$out_png" 2>>"$TOKEN_DIR/render.log" || true
   fi
   kill "$QS_PID" 2>/dev/null || true
   wait "$QS_PID" 2>/dev/null || true
@@ -291,23 +292,41 @@ run_render_phase() {
   kill "$MOCK_PID" 2>/dev/null || true
   MOCK_PID=""
 
-  echo "--- render phase (geo='$geo'):" >&2
+  echo "--- render phase $scenario (geo='$geo'):" >&2
   cat "$TOKEN_DIR/render.log" >&2
 
-  if [ ! -s "$png" ]; then
-    echo "FAIL: render phase — no capture (surface not found or grim failed)"
+  if [ ! -s "$out_png" ]; then
+    echo "FAIL: render phase $scenario — no capture (surface not found or grim failed)"
     FAILED=1
     return
   fi
   local size
-  size=$(stat -c %s "$png")
+  size=$(stat -c %s "$out_png")
   if [ "$size" -lt 20000 ]; then
-    echo "FAIL: render phase — capture looks blank (${size}B)"
+    echo "FAIL: render phase $scenario — capture looks blank (${size}B)"
     FAILED=1
     return
   fi
-  cp "$png" /tmp/jenkins-health-render.png
-  echo "PASS: render phase (${size}B capture, saved /tmp/jenkins-health-render.png)"
+  cp "$out_png" "/tmp/jenkins-health-render-$scenario.png"
+  echo "PASS: render phase $scenario (${size}B, saved /tmp/jenkins-health-render-$scenario.png)"
+}
+
+run_render_both_phases() {
+  if ! command -v grim >/dev/null 2>&1; then
+    echo "SKIP: render phases (grim not found)"
+    return
+  fi
+  run_render_phase healthy "$TOKEN_DIR/render-healthy.png"
+  run_render_phase degraded "$TOKEN_DIR/render-degraded.png"
+  if [ "$FAILED" = 1 ]; then
+    return
+  fi
+  if cmp -s "$TOKEN_DIR/render-healthy.png" "$TOKEN_DIR/render-degraded.png"; then
+    echo "FAIL: render phases — healthy and degraded captures are identical"
+    FAILED=1
+    return
+  fi
+  echo "PASS: render phases differ between states (level-dependent rendering confirmed)"
 }
 
 # ---- phase 6: safe actions ---------------------------------------------------
@@ -433,7 +452,7 @@ run_lifecycle_phase() {
   fi
 }
 
-run_render_phase
+run_render_both_phases
 run_action_phase
 run_lifecycle_phase
 if [ "$FAILED" = 1 ]; then

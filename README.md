@@ -92,6 +92,20 @@ omarchy plugin disable h3nr1.d14z.jenkins   # or remove the widget from shell.js
 omarchy plugin remove h3nr1.d14z.jenkins --yes   # remove a git install
 ```
 
+## Development
+
+```bash
+node tests/model_properties.mjs   # 600-scenario property sweep over Model.js
+bash tests/e2e/run.sh             # 10-phase runtime E2E (~50s)
+```
+
+The E2E suite drives the real Service/BarWidget/Panel in standalone
+Quickshell instances against a mock Jenkins controller: scenario dumps,
+the notification round-trip, live IPC, safe actions (crumb + POST), the
+widget registry lifecycle, and screen captures of both the healthy and
+degraded rendered surfaces. It never touches your desktop notification
+daemon, and screenshots capture only the test window.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
