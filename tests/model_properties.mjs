@@ -461,7 +461,7 @@ for (let iter = 0; iter < 300; iter++) {
       { name: 'LooseJob', color: 'yellow' },
     ],
   };
-  const ctrl = Model.parseController(api, '2.568.2');
+  const ctrl = Model.parseController(api, '2.440.3');
   ok(ctrl.jobs.length === 6, 'N6 leaf count on real-world shape', 'got ' + ctrl.jobs.length);
   const reds = ctrl.jobs.filter(j => j.color === 'red').map(j => j.name).sort();
   ok(JSON.stringify(reds) === JSON.stringify(['Delivery/IosApp', 'MobileGames/Puzzle3D-Develop']),
