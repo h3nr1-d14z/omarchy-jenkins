@@ -25,6 +25,8 @@ Credentials never appear in a process argument list: the API token is read
 from a file with mode 600 and handed to `curl` through a generated netrc
 file (also mode 600).
 
+![Jenkins Health chip and panel — Overview tab against a demo controller](docs/panel-demo.png)
+
 ## Setup
 
 1. Create an API token in Jenkins (*your name → Security → API Token*) and
@@ -40,9 +42,42 @@ file (also mode 600).
    `jenkinsUrl`, `jenkinsUser`, and (optionally) `tokenFile` in the widget
    settings of `~/.config/omarchy/shell.json`.
 
-The bar chip shows the health score; click it for the detail panel
-(Overview, Nodes, Jobs, Activity, Queue), middle-click to refresh
-immediately.
+## Using it
+
+The bar chip shows the Jenkins butler logo with the health score
+(0–100) colored by level — `ok` (≥95), `warn` (≥50), `critical`
+(below). Click the chip to open the panel; middle-click to refresh
+immediately. The panel has five tabs:
+
+- **Overview** — controller card (version, last update, level) and an
+  Attention list of everything currently wrong: offline or slow nodes,
+  disk pressure, queue backlog, stuck items, failing jobs, pending
+  updates. Below that, folder rollups (failing / total / worst health /
+  never-green for the worst folders), 24h Score and Queue trend
+  sparklines, and a Quiet down button.
+- **Nodes** — every build node with its state (online / offline /
+  temporarily offline), free disk with a 24h trend sparkline, response
+  time, and executor utilization.
+- **Jobs** — per-job detail rows (`h40 · #9 · 5m00s · 4h ago`:
+  weather health, last build, duration, age), sorted never-green
+  first, then worst health, then newest build. Capped at 50 rows.
+- **Activity** — the most recent build of every job, newest first
+  (top 20); running builds show a live `… so far` duration.
+- **Queue** — waiting items with reason and age; items Jenkins flags
+  as stuck get a badge.
+
+Three actions work straight from the panel and use your token's
+permissions: **Quiet down** toggles quiet-down mode (the button flips
+to *Cancel quiet-down*), the Queue tab's **Cancel** drops a single
+waiting item, and the Nodes tab's **Take offline** / **Bring online**
+flips a node's state. Cancel and node toggles change your controller
+immediately — be sure before you click.
+
+Notifications are edge-triggered — you hear about transitions, not
+every poll: controller down/up, node offline/online, new failures and
+recoveries, queue backlog start/clear, and maintenance events
+(quiet-down, restart-required, plugin updates). Each category can be
+turned off in the settings.
 
 ## Settings
 
