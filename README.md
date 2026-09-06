@@ -122,7 +122,7 @@ omarchy plugin enable h3nr1.d14z.jenkins
 For a real install from a git remote:
 
 ```bash
-omarchy plugin add <git-url> --enable
+omarchy plugin add https://github.com/h3nr1-d14z/omarchy-jenkins --enable
 ```
 
 Then add the widget to your bar layout in `~/.config/omarchy/shell.json`
