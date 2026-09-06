@@ -25,7 +25,7 @@ Credentials never appear in a process argument list: the API token is read
 from a file with mode 600 and handed to `curl` through a generated netrc
 file (also mode 600).
 
-![Jenkins Health chip and panel — Overview tab against a demo controller](docs/panel-demo.png)
+![Jenkins Health chip and panel — Overview tab against a demo controller](preview.png)
 
 ## Setup
 
