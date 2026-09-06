@@ -443,7 +443,7 @@ for (let iter = 0; iter < 300; iter++) {
 }
 
 // N6 real-world shape regression: folders-with-children, an empty folder,
-// and every color class — the real-world folder-organized controller profile.
+// and every color class — a folder-organized controller profile.
 {
   const api = {
     mode: 'NORMAL', quietingDown: false, useCrumbs: true, useSecurity: true, numExecutors: 0,
@@ -464,7 +464,7 @@ for (let iter = 0; iter < 300; iter++) {
   const ctrl = Model.parseController(api, '2.568.2');
   ok(ctrl.jobs.length === 6, 'N6 leaf count on real-world shape', 'got ' + ctrl.jobs.length);
   const reds = ctrl.jobs.filter(j => j.color === 'red').map(j => j.name).sort();
-  ok(JSON.stringify(reds) === JSON.stringify(['Delivery/IOS', 'MobileGames/Puzzle3D-Develop']),
+  ok(JSON.stringify(reds) === JSON.stringify(['Delivery/IosApp', 'MobileGames/Puzzle3D-Develop']),
     'N6 folder-prefixed failing jobs', JSON.stringify(reds));
   ok(ctrl.jobs.some(j => j.name === 'LooseJob' && j.color === 'yellow'),
     'N6 loose top-level job survives', '');

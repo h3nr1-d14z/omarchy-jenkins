@@ -2,3 +2,7 @@
 netrc
 token
 *.netrc
+
+# build artifacts
+__pycache__/
+*.pyc
