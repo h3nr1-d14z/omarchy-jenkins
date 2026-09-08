@@ -5,12 +5,13 @@
 # schemaVersion, required fields, entry points, kind<->entryPoint table,
 # symlinks, reserved IDs). This script checks requirements the binary does
 # not cover: exact plugin id, kind pair, keepLoaded, bar-widget settings
-# schema (8 settings with correct types and bounds), defaults consistency,
+# schema, defaults consistency, the marketplace's community field-length
+# limits (which the binary and the gate's own error message disagree on),
 # README install/remove docs, LICENSE, and a secret scan.
 #
 # Always exits 0: failures lower the plugin score, they never break the
 # harness. Prints one PASS/FAIL line per check and a final
-# "manifest_passed=N manifest_failed=N" summary (19 checks).
+# "manifest_passed=N manifest_failed=N" summary (22 checks).
 
 cd "$(dirname "$0")/../.." || exit 0
 
@@ -78,6 +79,18 @@ defaults_match() {
               == .barWidget.defaults.queueBacklogThreshold)' manifest.json
 }
 
+# Marketplace community-manifest field limits (manifestFieldLimits in
+# omacom/omarchy-plugin-marketplace scripts/build-catalog.mjs
+# validateManifest): the gate rejects longer fields with a needs-fixes
+# label, and `omarchy plugin validate` is blind to these — v0.5.0's
+# 622-char description shipped through every local gate and cost a
+# failed marketplace validation before this guard existed.
+field_limits_ok() {
+  jq -e '((.id | length) <= 128) and ((.name | length) <= 120)
+      and ((.version | length) <= 64) and ((.author | length) <= 120)
+      and ((.description | length) <= 500) and ((.license | length) <= 120)' manifest.json
+}
+
 readme_ok() {
   [ -f README.md ] || return 1
   grep -qi 'install' README.md && grep -qi 'remove' README.md
@@ -115,6 +128,12 @@ check "schema setting queueBacklogThreshold (integer with min/max/defaultValue)"
   setting_ok queueBacklogThreshold integer bounded
 check "schema setting diskWarnGb (integer with defaultValue)" setting_ok diskWarnGb integer
 check "schema setting diskCriticalGb (integer with defaultValue)" setting_ok diskCriticalGb integer
+check "schema setting diskWarnPct (integer with min/max/defaultValue)" \
+  setting_ok diskWarnPct integer bounded
+check "schema setting diskCriticalPct (integer with min/max/defaultValue)" \
+  setting_ok diskCriticalPct integer bounded
+check "manifest fields within marketplace limits (id 128, name 120, version 64, author 120, description 500, license 120)" \
+  field_limits_ok
 check "schema setting responseTimeWarnMs (integer with defaultValue)" \
   setting_ok responseTimeWarnMs integer
 check "barWidget defaults match schema (tokenFile, refreshIntervalSec, queueBacklogThreshold)" \

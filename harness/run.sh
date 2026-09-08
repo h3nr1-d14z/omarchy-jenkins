@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Benchmark harness entrypoint for the jenkins-health Omarchy plugin.
 #
-# Measures plugin completeness across four suites (96 checks total):
+# Measures plugin completeness across four suites (99 checks total):
 #   manifest checks  harness/tests/manifest_checks.sh   (19)
 #   model tests      harness/tests/model.test.mjs       (70)
 #   qmllint gate     harness/tests/qml_lint.sh           (4)
@@ -85,11 +85,11 @@ integration_failed=$(grep -oE 'integration_failed=[0-9]+' "$TMP/integration.out"
 
 total_passed=$((manifest_passed + model_passed + qml_lint_passed + integration_passed))
 total_failed=$((manifest_failed + model_failed + qml_lint_failed + integration_failed))
-total_checks=96
+total_checks=99
 
 echo
 echo "Jenkins Health harness: $total_passed/$total_checks checks passed"
-echo "  manifest:    $manifest_passed/19"
+echo "  manifest:    $manifest_passed/22"
 echo "  model:       $model_passed/70"
 echo "  qml lint:    $qml_lint_passed/4 ($qml_lint_errors lint errors)"
 echo "  integration: $integration_passed/3"
