@@ -91,7 +91,7 @@ Item {
   }
 
   // action: string ("quietDown" | "cancelQuietDown" | "cancelQueueItem" |
-  //                 "nodeOffline" | "nodeOnline" | "workspaceCleanup" |
+  //                 "nodeOffline" | "nodeOnline" |
   //                 "nodeWorkspaceList" | "nodeWorkspaceClean") or
   // descriptor object.
   function runAction(action, targetId) {
@@ -417,6 +417,10 @@ Item {
     }
 
     function updateDiskUnknown(snap) {
+      // notifyNodes covers this event class too: the bookkeeping below
+      // always runs (state stays correct if the category is re-enabled),
+      // only the toasts are suppressed.
+      var on = !root.config || root.config.notifyNodes !== false
       var K = 2
       var nextStreak = {}
       var nextAnnounced = {}
@@ -430,7 +434,7 @@ Item {
           streak = (diskUnknownStreak[name] || 0) + 1
           if (streak === K && !was) {
             was = true
-            notifyEvent({
+            if (on) notifyEvent({
               type: "node-disk-unknown",
               severity: "warn",
               message: "Node " + name + " disk state unknown (monitors not reporting)"
@@ -439,7 +443,7 @@ Item {
         } else if (was && un.state === "online") {
           // was announced, now reporting values again while online
           was = false
-          notifyEvent({
+          if (on) notifyEvent({
             type: "node-disk-ok",
             severity: "info",
             message: "Node " + name + " disk monitors reporting again"
@@ -570,7 +574,12 @@ Item {
     }
 
     function parseWorkspaceClean(exitCode, body) {
-      if (exitCode !== 0) return "workspace clean failed (exit " + exitCode + ")"
+      if (exitCode !== 0) {
+        var denied = /administer|script console|RunScripts|403/i.test(String(body || ""))
+        return denied
+          ? "workspace clean failed — no script-console permission (token must be admin-scoped)"
+          : "workspace clean failed (exit " + exitCode + ")"
+      }
       var lines = body.split("\n")
       var verdicts = {
         "NO_SUCH_COMPUTER": "node not found — nothing deleted",

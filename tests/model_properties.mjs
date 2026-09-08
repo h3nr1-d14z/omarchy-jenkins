@@ -349,7 +349,7 @@ for (let iter = 0; iter < N; iter++) {
   ok(args.some((a) => String(a).includes('Jenkins-Crumb')) === (crumb !== null), 'I13 crumb presence', ctx);
 
   const action = pick(['cancelQueueItem', 'quietDown', 'cancelQuietDown', 'nodeOffline', 'nodeOnline',
-    'workspaceCleanup', 'nodeWorkspaceList', 'nodeWorkspaceClean', 'bogusAction']);
+    'nodeWorkspaceList', 'nodeWorkspaceClean', 'bogusAction']);
   const cmd = Model.buildActionCommand({ action, targetId: '42' }, null, url, '/tmp/n', crumb);
   if (action === 'bogusAction') {
     ok(Array.isArray(cmd) && cmd.length === 0, 'I14 unknown action → empty', ctx);
@@ -363,9 +363,7 @@ for (let iter = 0; iter < N; iter++) {
     ok(si !== -1 && String(cmd[si + 1]).startsWith('script='), 'I14 script body data', ctx);
     ok(String(cmd[si + 1]).includes("getComputer('42')"), 'I14 node name interpolated', ctx);
   }
-  if (action === 'workspaceCleanup') {
-    ok(cmd[cmd.length - 1].endsWith('/doWorkspaceCleanup'), 'I14 workspaceCleanup url', ctx);
-  }
+
 }
 
 // ------------------------------------------- nested-folder flattening (N*)

@@ -10,16 +10,15 @@ watches a Jenkins CI controller and reports its health in the bar:
   items, failing jobs, and pending maintenance.
 - **Notification layer** for five categories: controller down/up, node
   changes (including per-node disk: low, critical, recovered, and
-  state-unknown — a node whose monitors stop reporting is itself a
-  warning), job failures, queue backlog, and maintenance (quiet-down,
+  state-unknown — a node whose monitors stop reporting is itself
+  flagged), job failures, queue backlog, and maintenance (quiet-down,
   restart-required, plugin updates). Each category can be toggled off.
 - **Safe actions** from the panel: quiet-down toggle, cancel a queue item,
   and take a node offline / back online.
-- **Opt-in workspace cleanup** (both behind the `enableCleanWorkspace`
-  setting, off by default): a controller-wide button for Jenkins' own
-  retention-aware cleanup, and a per-node *Clean ws* wipe that lists the
-  workspace directories under that node's default workspace root and
-  deletes them after an explicit confirm.
+- **Opt-in workspace wipe** (behind the `enableCleanWorkspace` setting,
+  off by default): a per-node *Clean ws* action that lists the workspace
+  directories under that node's default workspace root and deletes them
+  after an explicit confirm.
 - **Job depth** from a single tree query: Jenkins health scores, last
   build (result/duration/age), never-green detection, folder rollups,
   and an Activity feed of the most recent builds across the catalog.
@@ -65,9 +64,10 @@ immediately. The panel has five tabs:
 - **Nodes** — every build node with its state (online / offline /
   temporarily offline), free workspace disk *and* `/tmp` free with a 24h
   trend sparkline, response time, and executor utilization. Nodes whose
-  monitors report no values show `?` — that "unknown" state is scored as
-  a warning, since a filling disk is exactly what makes monitors go
-  quiet.
+  monitors report no values show `?` — that "unknown" state flags the
+  node at warn level with a listed reason (no numeric score penalty:
+  the evidence is weak), since a filling disk is exactly what makes
+  monitors go quiet.
 - **Jobs** — per-job detail rows (`h40 · #9 · 5m00s · 4h ago`:
   weather health, last build, duration, age), sorted never-green
   first, then worst health, then newest build. Capped at 50 rows.
@@ -82,13 +82,6 @@ to *Cancel quiet-down*), the Queue tab's **Cancel** drops a single
 waiting item, and the Nodes tab's **Take offline** / **Bring online**
 flips a node's state. Cancel and node toggles change your controller
 immediately — be sure before you click.
-
-**Clean up workspaces** (Overview, Maintenance section) invokes
-Jenkins' built-in workspace cleanup thread: retention-aware, skips
-in-use and recent workspaces on every node — the same pass Jenkins
-runs periodically by itself. It needs the same admin-scoped token as
-the per-node wipe (Jenkins gates it behind ADMINISTER), so it lives
-behind the same setting.
 
 **Clean ws** (Nodes tab, per node) is the opt-in aggressive variant:
 it lists the workspace directories under that node's *default
@@ -131,7 +124,7 @@ minute — never toasts.
 | `responseTimeWarnMs` | `1000` | Node response-time threshold. |
 | `failurePenaltyCap` | `0` | Cap on the failing-jobs score penalty (0 = uncapped). |
 | `notifyController`, `notifyNodes`, `notifyFailures`, `notifyQueue`, `notifyMaintenance` | `On` | Per-category notification toggles. |
-| `enableCleanWorkspace` | `Off` | Shows the workspace-cleanup buttons: the controller-wide retention-aware cleanup and the per-node *Clean ws* wipe. Both need an admin-scoped token. |
+| `enableCleanWorkspace` | `Off` | Shows the per-node *Clean ws* wipe (script-console delete; needs an admin-scoped token). |
 
 ## IPC
 

@@ -27,7 +27,7 @@ ShellRoot {
   property int actionIndex: 0
 
   Component.onCompleted: {
-    var raw = String(Quickshell.env("JH_E2E_ACTIONS") || "quietDown,cancelQueueItem:207,nodeOffline:build-agent-03,workspaceCleanup,nodeWorkspaceList:build-agent-03,nodeWorkspaceClean:build-agent-03,cancelQuietDown")
+    var raw = String(Quickshell.env("JH_E2E_ACTIONS") || "quietDown,cancelQueueItem:207,nodeOffline:build-agent-03,nodeWorkspaceList:build-agent-03,nodeWorkspaceClean:build-agent-03,cancelQuietDown")
     var list = []
     var parts = raw.split(",")
     for (var i = 0; i < parts.length; i++) {
@@ -84,7 +84,7 @@ ShellRoot {
   }
 
   Timer {
-    // 7 actions fire at 2.0s then every 0.6s (last at 5.6s); each chain
+    // 6 actions fire at 2.0s then every 0.6s (last at 5.0s); each chain
     // (crumb + POST) takes ~0.1s locally, so the last action's feedback —
     // success or failure — is stable well before this dump.
     interval: 7200

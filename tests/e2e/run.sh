@@ -732,8 +732,8 @@ PYEOF
   local posts crumbs
   posts=$(grep -c "^POST " "$action_log" || true)
   crumbs=$(grep -c "crumb: action-crumb-1" "$action_log" || true)
-  if [ "$posts" -ne 7 ] || [ "$crumbs" -ne 7 ]; then
-    echo "FAIL: action phase — expected 7 POSTs with crumbs, got $posts/$crumbs (see stderr)"
+  if [ "$posts" -ne 6 ] || [ "$crumbs" -ne 6 ]; then
+    echo "FAIL: action phase — expected 6 POSTs with crumbs, got $posts/$crumbs (see stderr)"
     FAILED=1
     rm -f "$action_srv" "$action_log"
     return
@@ -745,7 +745,7 @@ PYEOF
     rm -f "$action_srv" "$action_log"
     return
   fi
-  for want in "POST /quietDown" "POST /queue/cancelItem?id=207" "POST /computer/build-agent-03/doChangeOffline" "POST /doWorkspaceCleanup" "POST /scriptText" "POST /cancelQuietDown"; do
+  for want in "POST /quietDown" "POST /queue/cancelItem?id=207" "POST /computer/build-agent-03/doChangeOffline" "POST /scriptText" "POST /cancelQuietDown"; do
     if ! grep -qF "$want" "$action_log"; then
       echo "FAIL: action phase — missing '$want' (see stderr)"
       FAILED=1

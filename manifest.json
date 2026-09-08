@@ -5,7 +5,7 @@
   "version": "0.4.0",
   "author": "H3nr1 D14z",
   "license": "MIT",
-  "description": "Jenkins controller health in the Omarchy bar: live polling of controller, nodes (workspace and /tmp disk), queue, jobs, and plugin updates; notifications for controller outages, node state and disk changes, job failures, queue backlogs, and maintenance; safe actions (quiet-down toggle, cancel queue item, node online/offline) plus opt-in workspace cleanup buttons (Jenkins' retention-aware pass and an admin-token per-node wipe).",
+  "description": "Jenkins controller health in the Omarchy bar: live polling of controller, nodes (workspace and /tmp disk), queue, jobs, and plugin updates; notifications for controller outages, node state and disk changes, job failures, queue backlogs, and maintenance; safe actions (quiet-down toggle, cancel queue item, node online/offline) plus an opt-in per-node workspace wipe (admin token, server-side idle re-check).",
   "kinds": [
     "service",
     "bar-widget"
@@ -177,7 +177,7 @@
           "On"
         ],
         "defaultValue": "Off",
-        "description": "Off by default. When On, shows the controller-wide workspace cleanup button and per-node Clean ws buttons (list, then confirm-delete, workspaces under the node's default root). Both require an admin-scoped API token; the delete re-checks node idleness server-side."
+        "description": "Off by default. When On, nodes get a Clean ws button: list the workspace directories under the node's default root, then confirm-delete the non-building ones via the Jenkins script console. Requires an admin-scoped API token; the delete re-checks node idleness server-side."
       }
     ]
   }

@@ -519,18 +519,6 @@ Item {
             }
           }
 
-          // Jenkins' own retention-aware workspace cleanup (skips
-          // in-use and recent workspaces, all nodes). Same privilege
-          // class as the per-node wipe (both need an admin token), so
-          // both live behind enableCleanWorkspace.
-          Button {
-            visible: root.cleanWorkspaceEnabled
-            text: "Clean up workspaces"
-            enabled: root.actionsEnabled
-            onClicked: if (root.service) {
-              root.service.runAction("workspaceCleanup", null)
-            }
-          }
         }
 
         Text {

@@ -362,13 +362,19 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
     // Dedicated disk tier for edge-triggered notifications: never derived
     // from `level`, which also folds offline/slow causes. An online node
     // whose monitors report no values is "unknown" — that is exactly the
-    // state a filling disk hides behind. Offline nodes keep whatever the
-    // (stale) values say, but diffEvents never diffs them, so no flapping.
+    // state a filling disk hides behind, so it flags the node at warn
+    // level with a listed reason (attention without a numeric penalty:
+    // the evidence is weak and the Service toast is debounced). Offline
+    // nodes keep whatever the (stale) values say, but diffEvents never
+    // diffs them, so no flapping.
     var diskTier = null
     if (minGb !== null) {
       diskTier = minGb < diskCriticalGb ? "critical" : (minGb < diskWarnGb ? "low" : "ok")
     } else if (!isOffline) {
       diskTier = "unknown"
+      reasons.push("disk state unknown (monitors not reporting)")
+      if (level === "ok") level = "warn"
+      overallReasons.push("node " + node.displayName + " disk state unknown (monitors not reporting)")
     }
 
     if (!isOffline && node.responseTimeMs !== null && node.responseTimeMs !== undefined
@@ -905,9 +911,12 @@ function buildCurlArgs(endpoint, method, jenkinsUrl, netrcPath, crumb) {
 }
 
 // Safe actions: quietDown / cancelQuietDown / cancelQueueItem /
-// nodeOffline / nodeOnline / workspaceCleanup. `action` is either a
-// descriptor object {action, targetId} or a plain string (with targetId
-// as second argument).
+// nodeOffline / nodeOnline. `action` is either a descriptor object
+// {action, targetId} or a plain string (with targetId as second
+// argument). A root /doWorkspaceCleanup POST was tried and removed:
+// the route does not exist on the target controller (GET → 404 while
+// quietDown GET → 405), so the script-console path below is the only
+// workspace-cleanup mechanism this plugin ships.
 //
 // nodeWorkspaceList / nodeWorkspaceClean run fixed Groovy templates on
 // the script console (requires an admin-scoped token): the node NAME is
@@ -931,11 +940,6 @@ function buildActionCommand(action, targetId, jenkinsUrl, netrcPath, crumb) {
     endpoint = "/computer/" + encodeURIComponent(id) + "/doChangeOffline?offline=true&offlineMessage=jenkins-health"
   } else if (kind === "nodeOnline") {
     endpoint = "/computer/" + encodeURIComponent(id) + "/doChangeOffline?offline=false"
-  } else if (kind === "workspaceCleanup") {
-    // Jenkins' built-in WorkspaceCleanupThread: retention-aware, skips
-    // in-use and recent workspaces on every node. A plain POST like the
-    // other safe actions.
-    endpoint = "/doWorkspaceCleanup"
   } else if (kind === "nodeWorkspaceList" || kind === "nodeWorkspaceClean") {
     var script = kind === "nodeWorkspaceList"
       ? workspaceListScript(id) : workspaceCleanScript(id)
