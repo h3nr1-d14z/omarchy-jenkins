@@ -41,6 +41,9 @@ Item {
   readonly property string statusMessage: internal.statusMessage
   readonly property string actionMessage: internal.actionMessage
   readonly property bool busy: internal.busy
+  // Workspace dry-run for the node last asked to clean: {node, dirs, error}
+  // or null. Set by nodeWorkspaceList, cleared by clean/confirm-dismiss.
+  readonly property var workspacePreview: internal.workspacePreview
   // Time series for the panel sparklines (persisted across restarts;
   // see the history section in Model.js for the retention policy).
   readonly property var historyPts: internal.historyPts
@@ -88,9 +91,15 @@ Item {
   }
 
   // action: string ("quietDown" | "cancelQuietDown" | "cancelQueueItem" |
-  //                 "nodeOffline" | "nodeOnline") or descriptor object.
+  //                 "nodeOffline" | "nodeOnline" | "workspaceCleanup" |
+  //                 "nodeWorkspaceList" | "nodeWorkspaceClean") or
+  // descriptor object.
   function runAction(action, targetId) {
     internal.runAction(action, targetId)
+  }
+
+  function clearWorkspacePreview() {
+    internal.workspacePreview = null
   }
 
   Component.onCompleted: internal.loadHistory()
@@ -105,6 +114,11 @@ Item {
     property string lastUpdatedText: ""
     property string statusMessage: ""
     property string actionMessage: ""
+    property var workspacePreview: null
+    property string lastActionKind: ""
+    property string lastActionTarget: ""
+    property var diskUnknownStreak: ({})
+    property var diskUnknownAnnounced: ({})
     property bool busy: false
     property bool netrcOk: false
     property var fetched: ({})
@@ -393,12 +407,61 @@ Item {
       }
 
       for (var i = 0; i < events.length; i++) notifyEvent(events[i])
+
+      // Disk-unknown debounce: node monitors report null for a poll or
+      // two after every agent reconnect (NodeMonitor computes on a ~1min
+      // period). diffEvents deliberately does not edge on "unknown";
+      // announce only after the node has been online-with-null-monitors
+      // for K consecutive polls, and recover when it reports again.
+      updateDiskUnknown(snap)
+    }
+
+    function updateDiskUnknown(snap) {
+      var K = 2
+      var nextStreak = {}
+      var nextAnnounced = {}
+      var nodes = Array.isArray(snap.nodes) ? snap.nodes : []
+      for (var u = 0; u < nodes.length; u++) {
+        var un = nodes[u]
+        var name = un.displayName
+        var streak = 0
+        var was = diskUnknownAnnounced[name] === true
+        if (un.state === "online" && un.diskTier === "unknown") {
+          streak = (diskUnknownStreak[name] || 0) + 1
+          if (streak === K && !was) {
+            was = true
+            notifyEvent({
+              type: "node-disk-unknown",
+              severity: "warn",
+              message: "Node " + name + " disk state unknown (monitors not reporting)"
+            })
+          }
+        } else if (was && un.state === "online") {
+          // was announced, now reporting values again while online
+          was = false
+          notifyEvent({
+            type: "node-disk-ok",
+            severity: "info",
+            message: "Node " + name + " disk monitors reporting again"
+          })
+        } else {
+          // offline or disappeared: silently clear, offline values are
+          // stale by definition and going offline already notified
+          was = false
+        }
+        nextStreak[name] = streak
+        nextAnnounced[name] = was
+      }
+      diskUnknownStreak = nextStreak
+      diskUnknownAnnounced = nextAnnounced
     }
 
     function notifyEvent(ev) {
       var glyphs = {
         "controller-down": "󰅙", "controller-up": "󰄬",
         "node-offline": "󰅙", "node-online": "󰄬",
+        "node-disk-low": "󰉋", "node-disk-critical": "󰉋",
+        "node-disk-unknown": "󰉋", "node-disk-ok": "󰄬",
         "job-failure": "󰅙", "job-recovered": "󰄬",
         "queue-backlog": "󰦖", "queue-clear": "󰄬",
         "maintenance": "󰢌"
@@ -408,6 +471,10 @@ Item {
         "controller-up": "Jenkins controller up",
         "node-offline": "Jenkins node offline",
         "node-online": "Jenkins node online",
+        "node-disk-low": "Jenkins node disk low",
+        "node-disk-critical": "Jenkins node disk critical",
+        "node-disk-unknown": "Jenkins node disk unknown",
+        "node-disk-ok": "Jenkins node disk recovered",
         "job-failure": "Jenkins job failure",
         "job-recovered": "Jenkins jobs recovered",
         "queue-backlog": "Jenkins queue backlog",
@@ -428,6 +495,9 @@ Item {
       pendingAction = (action && typeof action === "object")
         ? action
         : { action: String(action || ""), targetId: targetId }
+      lastActionKind = String(pendingAction.action || "")
+      lastActionTarget = pendingAction.targetId !== undefined && pendingAction.targetId !== null
+        ? String(pendingAction.targetId) : ""
       actionMessage = "running action…"
       crumbProcess.command = Model.buildCurlArgs("/crumbIssuer/api/json", "GET", jenkinsUrl, netrcPath, null)
       crumbProcess.running = true
@@ -450,11 +520,80 @@ Item {
       actionProcess.running = true
     }
 
-    function onActionExit(exitCode) {
-      actionMessage = exitCode === 0
-        ? "action sent"
-        : "action failed (exit " + exitCode + ")"
+    function onActionExit(exitCode, text) {
+      if (lastActionKind === "nodeWorkspaceList") {
+        workspacePreview = parseWorkspaceList(exitCode, scriptBody(text))
+        actionMessage = exitCode === 0
+          ? "workspace list loaded"
+          : "workspace list failed (exit " + exitCode + ")"
+      } else if (lastActionKind === "nodeWorkspaceClean") {
+        actionMessage = parseWorkspaceClean(exitCode, scriptBody(text))
+        workspacePreview = null
+      } else {
+        actionMessage = exitCode === 0
+          ? "action sent"
+          : "action failed (exit " + exitCode + ")"
+      }
       actionRefreshTimer.restart()
+    }
+
+    // /scriptText answers plain text on this controller but is JSON
+    // {result: "..."} elsewhere — accept both.
+    function scriptBody(text) {
+      var body = String(text || "")
+      try {
+        var doc = JSON.parse(body)
+        if (doc && typeof doc.result === "string") body = doc.result
+      } catch (e) {}
+      return body
+    }
+
+    function parseWorkspaceList(exitCode, body) {
+      var node = lastActionTarget
+      if (exitCode !== 0) {
+        var denied = /administer|script console|RunScripts|403/i.test(String(body || ""))
+        return { node: node, dirs: [],
+          error: denied ? "no script-console permission — the token must be admin-scoped" : "request failed" }
+      }
+      var lines = body.split("\n")
+      var verdicts = ["NO_SUCH_COMPUTER", "NODE_OFFLINE", "NODE_BUSY", "NO_WORKSPACE_ROOT"]
+      var first = String(lines[0] || "").trim()
+      if (verdicts.indexOf(first) !== -1) {
+        return { node: node, dirs: [], error: first }
+      }
+      var dirs = []
+      for (var i = 0; i < lines.length; i++) {
+        var line = String(lines[i] || "")
+        if (line.indexOf("DIR ") === 0) dirs.push(line.slice(4).trim())
+      }
+      return { node: node, dirs: dirs, error: "" }
+    }
+
+    function parseWorkspaceClean(exitCode, body) {
+      if (exitCode !== 0) return "workspace clean failed (exit " + exitCode + ")"
+      var lines = body.split("\n")
+      var verdicts = {
+        "NO_SUCH_COMPUTER": "node not found — nothing deleted",
+        "NODE_OFFLINE": "node offline — nothing deleted",
+        "NODE_BUSY": "node busy — nothing deleted",
+        "NO_WORKSPACE_ROOT": "no workspace root — nothing deleted"
+      }
+      var first = String(lines[0] || "").trim()
+      if (verdicts[first]) return verdicts[first]
+      for (var i = 0; i < lines.length; i++) {
+        var line = String(lines[i] || "")
+        if (line.indexOf("RESULT ") === 0) {
+          var parts = line.slice(7).trim().split(/\s+/)
+          var out = {}
+          for (var p = 0; p < parts.length; p++) {
+            var kv = parts[p].split("=")
+            out[kv[0]] = kv[1]
+          }
+          return "deleted " + (out.deleted || 0) + " workspace dirs (skipped "
+            + (out.skipped || 0) + ", failed " + (out.errors || 0) + ")"
+        }
+      }
+      return "workspace clean finished (unexpected response)"
     }
   }
 
@@ -475,7 +614,7 @@ Item {
 
   property Process actionProcess: Process {
     stdout: StdioCollector { id: actionOut; waitForEnd: true }
-    onExited: function(exitCode) { internal.onActionExit(exitCode) }
+    onExited: function(exitCode) { internal.onActionExit(exitCode, actionOut.text || "") }
   }
 
   property Process historyWriteProcess: Process {

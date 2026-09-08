@@ -64,7 +64,8 @@ ShellRoot {
       queueBacklogThreshold: 10,
       diskWarnGb: 25,
       diskCriticalGb: 10,
-      responseTimeWarnMs: 1000
+      responseTimeWarnMs: 1000,
+      enableCleanWorkspace: "On"
     })
   }
 
@@ -78,7 +79,8 @@ ShellRoot {
         widgetState: widget.state,
         chipText: widget.chipText,
         serviceState: service.state,
-        score: service.score
+        score: service.score,
+        cleanWired: service.config.enableCleanWorkspace === true
       }))
     }
   }

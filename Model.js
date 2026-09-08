@@ -134,11 +134,16 @@ function parseNodes(computerJson) {
     var rt = jhIsObject(md["hudson.node_monitors.ResponseTimeMonitor"])
       ? md["hudson.node_monitors.ResponseTimeMonitor"] : null
 
+    // One-off executors are transient (flyweight/pipeline steps) and are
+    // never part of the executor total, but they do hold workspace
+    // leases — so they count toward busy separately. A node can read
+    // idle on the regular executors while a one-off still works.
     var executors = Array.isArray(c.executors) ? c.executors : []
     var busy = 0
     for (var e = 0; e < executors.length; e++) {
       if (jhIsObject(executors[e]) && executors[e].idle === false) busy++
     }
+    var oneOff = Array.isArray(c.oneOffExecutors) ? c.oneOffExecutors : []
 
     var isTemp = !!c.temporarilyOffline
     var isOffline = !!c.offline || isTemp
@@ -155,7 +160,8 @@ function parseNodes(computerJson) {
       responseTimeMs: rt ? jhNum(rt.average, null) : null,
       architecture: jhStr(md["hudson.node_monitors.ArchitectureMonitor"], null),
       executorsTotal: executors.length,
-      executorsIdle: executors.length - busy
+      executorsIdle: executors.length - busy,
+      oneOffBusy: oneOff.length
     })
   }
 
@@ -322,9 +328,17 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
     var isOffline = !!node.offline || !!node.temporarilyOffline
     var diskGb = node.diskBytes !== null && node.diskBytes !== undefined
       ? node.diskBytes / 1e9 : null
+    var tmpGb = node.tempBytes !== null && node.tempBytes !== undefined
+      ? node.tempBytes / 1e9 : null
+    // /tmp is a separate volume on most agents and is the one that
+    // actually fills (workspace cleanup never touches it), so the disk
+    // tier keys on the worse of the two reported volumes.
+    var minGb = null
+    if (diskGb !== null && tmpGb !== null) minGb = diskGb < tmpGb ? diskGb : tmpGb
+    else if (diskGb !== null) minGb = diskGb
+    else if (tmpGb !== null) minGb = tmpGb
     var reasons = []
     var level = "ok"
-
     if (isOffline) {
       offlineNodes++
       var cause = node.offlineCauseReason
@@ -334,16 +348,27 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
       level = "warn"
       overallReasons.push("node " + node.displayName + " offline — " + cause)
     }
-
-    if (diskGb !== null && diskGb < diskCriticalGb) {
-      reasons.push("disk space critical: " + jhGbLabel(diskGb) + " free")
+    if (minGb !== null && minGb < diskCriticalGb) {
+      reasons.push("disk space critical: " + jhGbLabel(minGb) + " free")
       level = "critical"
       if (!isOffline) diskCriticalOnline++
-      overallReasons.push("node " + node.displayName + " disk space critical: " + jhGbLabel(diskGb) + " free")
-    } else if (diskGb !== null && diskGb < diskWarnGb) {
-      reasons.push("disk space low: " + jhGbLabel(diskGb) + " free")
+      overallReasons.push("node " + node.displayName + " disk space critical: " + jhGbLabel(minGb) + " free")
+    } else if (minGb !== null && minGb < diskWarnGb) {
+      reasons.push("disk space low: " + jhGbLabel(minGb) + " free")
       if (level === "ok") level = "warn"
-      overallReasons.push("node " + node.displayName + " disk space low: " + jhGbLabel(diskGb) + " free")
+      overallReasons.push("node " + node.displayName + " disk space low: " + jhGbLabel(minGb) + " free")
+    }
+
+    // Dedicated disk tier for edge-triggered notifications: never derived
+    // from `level`, which also folds offline/slow causes. An online node
+    // whose monitors report no values is "unknown" — that is exactly the
+    // state a filling disk hides behind. Offline nodes keep whatever the
+    // (stale) values say, but diffEvents never diffs them, so no flapping.
+    var diskTier = null
+    if (minGb !== null) {
+      diskTier = minGb < diskCriticalGb ? "critical" : (minGb < diskWarnGb ? "low" : "ok")
+    } else if (!isOffline) {
+      diskTier = "unknown"
     }
 
     if (!isOffline && node.responseTimeMs !== null && node.responseTimeMs !== undefined
@@ -358,9 +383,12 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
       displayName: node.displayName,
       state: isOffline ? "offline" : "online",
       diskGb: diskGb,
+      tmpGb: tmpGb,
+      diskTier: diskTier,
       responseTimeMs: node.responseTimeMs,
       executorsTotal: node.executorsTotal,
       executorsIdle: node.executorsIdle,
+      oneOffBusy: node.oneOffBusy,
       utilization: node.executorsTotal > 0
         ? (node.executorsTotal - node.executorsIdle) / node.executorsTotal : 0,
       level: level,
@@ -484,7 +512,10 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
 
 // Edge-triggered notification events between two assess() snapshots.
 // Event types: controller-down, controller-up, node-offline, node-online,
+// node-disk-low, node-disk-critical, node-disk-ok,
 // job-failure, job-recovered, queue-backlog, queue-clear, maintenance.
+// (node-disk-unknown is synthesized by Service after a debounce, not
+// diffed here — see the disk-tier block below for why.)
 // config toggles: notifyController, notifyNodes, notifyFailures,
 // notifyQueue, notifyMaintenance (false disables that category).
 function diffEvents(prevSnapshot, nextSnapshot, config) {
@@ -518,12 +549,13 @@ function diffEvents(prevSnapshot, nextSnapshot, config) {
     })
   }
 
-  // node state changes (matched by displayName, both snapshots reachable)
+  // node state and disk-tier changes (matched by displayName, both
+  // snapshots reachable)
   if (notifyNodes && prevUp && nextUp) {
     var prevMap = {}
     var prevNodes = Array.isArray(prevSnapshot.nodes) ? prevSnapshot.nodes : []
     for (var i = 0; i < prevNodes.length; i++) {
-      prevMap[prevNodes[i].displayName] = prevNodes[i].state
+      prevMap[prevNodes[i].displayName] = prevNodes[i]
     }
     var nextMap = {}
     var nextNodes = Array.isArray(nextSnapshot.nodes) ? nextSnapshot.nodes : []
@@ -531,21 +563,63 @@ function diffEvents(prevSnapshot, nextSnapshot, config) {
       nextMap[nextNodes[j].displayName] = nextNodes[j]
     }
     for (var name in prevMap) {
-      var nextState = nextMap[name] ? nextMap[name].state : undefined
-      if (prevMap[name] === "online" && nextState === "offline") {
-        var cause = nextMap[name].reasons && nextMap[name].reasons.length > 0
-          ? " (" + nextMap[name].reasons.join("; ") + ")" : ""
+      var prevNode = prevMap[name]
+      var nextNode = nextMap[name]
+      var nextState = nextNode ? nextNode.state : undefined
+      if (prevNode.state === "online" && nextState === "offline") {
+        var cause = nextNode.reasons && nextNode.reasons.length > 0
+          ? " (" + nextNode.reasons.join("; ") + ")" : ""
         events.push({
           type: "node-offline",
           severity: "warn",
           message: "Node " + name + " went offline" + cause
         })
-      } else if (prevMap[name] === "offline" && nextState === "online") {
+      } else if (prevNode.state === "offline" && nextState === "online") {
         events.push({
           type: "node-online",
           severity: "info",
           message: "Node " + name + " is back online"
         })
+      }
+
+      // Disk-tier edges, only while the node is online in the NEXT
+      // snapshot: an offline node's monitor values are frozen (stale),
+      // so diffing across the offline boundary would flap. Transitions
+      // INTO low/critical warn; back to "ok" from low/critical recovers.
+      // The "unknown" tier (online, monitors null) is deliberately NOT
+      // diffed here: monitors report null for a poll or two after every
+      // agent reconnect, so an edge here would toast on each reconnect.
+      // Service debounces it across consecutive polls instead.
+      if (nextState === "online" && nextNode && nextNode.diskTier
+          && nextNode.diskTier !== (prevNode && prevNode.diskTier)) {
+        if (nextNode.diskTier === "critical") {
+          events.push({
+            type: "node-disk-critical",
+            severity: "critical",
+            message: "Node " + name + " disk space critical: "
+              + jhGbLabel(Math.min(
+                  nextNode.diskGb !== null && nextNode.diskGb !== undefined ? nextNode.diskGb : Infinity,
+                  nextNode.tmpGb !== null && nextNode.tmpGb !== undefined ? nextNode.tmpGb : Infinity))
+              + " free"
+          })
+        } else if (nextNode.diskTier === "low") {
+          events.push({
+            type: "node-disk-low",
+            severity: "warn",
+            message: "Node " + name + " disk space low: "
+              + jhGbLabel(Math.min(
+                  nextNode.diskGb !== null && nextNode.diskGb !== undefined ? nextNode.diskGb : Infinity,
+                  nextNode.tmpGb !== null && nextNode.tmpGb !== undefined ? nextNode.tmpGb : Infinity))
+              + " free"
+          })
+        } else if (prevNode && (prevNode.diskTier === "low"
+            || prevNode.diskTier === "critical")) {
+          events.push({
+            type: "node-disk-ok",
+            severity: "info",
+            message: "Node " + name + " disk space recovered"
+          })
+        }
       }
     }
   }
@@ -831,8 +905,16 @@ function buildCurlArgs(endpoint, method, jenkinsUrl, netrcPath, crumb) {
 }
 
 // Safe actions: quietDown / cancelQuietDown / cancelQueueItem /
-// nodeOffline / nodeOnline. `action` is either a descriptor object
-// {action, targetId} or a plain string (with targetId as second argument).
+// nodeOffline / nodeOnline / workspaceCleanup. `action` is either a
+// descriptor object {action, targetId} or a plain string (with targetId
+// as second argument).
+//
+// nodeWorkspaceList / nodeWorkspaceClean run fixed Groovy templates on
+// the script console (requires an admin-scoped token): the node NAME is
+// the only value ever interpolated into the script text. The clean
+// script re-checks idleness and onlineness SERVER-SIDE (Computer.isIdle
+// also covers one-off executors) so a stale panel cannot trigger a
+// delete on a busy node.
 function buildActionCommand(action, targetId, jenkinsUrl, netrcPath, crumb) {
   var act = jhIsObject(action) ? action : { action: String(action || ""), targetId: targetId }
   var kind = String(act.action || "")
@@ -849,12 +931,87 @@ function buildActionCommand(action, targetId, jenkinsUrl, netrcPath, crumb) {
     endpoint = "/computer/" + encodeURIComponent(id) + "/doChangeOffline?offline=true&offlineMessage=jenkins-health"
   } else if (kind === "nodeOnline") {
     endpoint = "/computer/" + encodeURIComponent(id) + "/doChangeOffline?offline=false"
+  } else if (kind === "workspaceCleanup") {
+    // Jenkins' built-in WorkspaceCleanupThread: retention-aware, skips
+    // in-use and recent workspaces on every node. A plain POST like the
+    // other safe actions.
+    endpoint = "/doWorkspaceCleanup"
+  } else if (kind === "nodeWorkspaceList" || kind === "nodeWorkspaceClean") {
+    var script = kind === "nodeWorkspaceList"
+      ? workspaceListScript(id) : workspaceCleanScript(id)
+    return buildScriptCommand(script, jenkinsUrl, netrcPath, crumb)
   } else {
     return []
   }
 
   return buildCurlArgs(endpoint, "POST", jenkinsUrl, netrcPath, crumb)
 }
+
+// Groovy single-quoted string literal: the node name is the only
+// interpolated value, escaped so nothing else can ride along.
+function jhGroovyString(value) {
+  return "'" + String(value === undefined || value === null ? "" : value)
+    .replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'"
+}
+
+function workspaceListScript(nodeName) {
+  return [
+    "def c = Jenkins.instance.getComputer(" + jhGroovyString(nodeName) + ")",
+    // getComputer matches the config NAME only; the built-in node's
+    // name is "" and its display name is "Built-In Node" — resolve by
+    // display name when the name lookup missed.
+    "if (c == null) { c = Jenkins.instance.computers.toList().find { it.displayName == " + jhGroovyString(nodeName) + " } }",
+    "if (c == null) { println('NO_SUCH_COMPUTER'); return }",
+    "def ws = c.node != null ? c.node.rootPath : null",
+    "if (ws != null) { ws = ws.child('workspace') }",
+    "if (ws == null) { println('NO_WORKSPACE_ROOT'); return }",
+    "def n = 0",
+    "ws.list().findAll { it.isDirectory() }.each { println('DIR ' + it.name); n++ }",
+    "println('LISTED ' + n)"
+  ].join("\n")
+}
+
+function workspaceCleanScript(nodeName) {
+  return [
+    "def c = Jenkins.instance.getComputer(" + jhGroovyString(nodeName) + ")",
+    "if (c == null) { c = Jenkins.instance.computers.toList().find { it.displayName == " + jhGroovyString(nodeName) + " } }",
+    "if (c == null) { println('NO_SUCH_COMPUTER'); return }",
+    "if (!c.online) { println('NODE_OFFLINE'); return }",
+    "if (!c.idle) { println('NODE_BUSY'); return }",
+    "def ws = c.node != null ? c.node.rootPath : null",
+    "if (ws != null) { ws = ws.child('workspace') }",
+    "if (ws == null) { println('NO_WORKSPACE_ROOT'); return }",
+    "def deleted = 0; def skipped = 0; def errors = 0",
+    "ws.list().findAll { it.isDirectory() }.each { d ->",
+    "  def building = false",
+    "  try {",
+    "    def item = Jenkins.instance.getItemByFullName(d.name)",
+    "    if (item != null) { building = item.isBuilding() }",
+    "  } catch (e) { building = false }",
+    "  if (building) { skipped++ } else {",
+    "    try { d.deleteRecursive(); deleted++ } catch (e) { errors++ }",
+    "  }",
+    "}",
+    "println('RESULT deleted=' + deleted + ' skipped=' + skipped + ' errors=' + errors)"
+  ].join("\n")
+}
+
+// scriptText POST: longer timeout than polling actions — a sweep over a
+// multi-hundred-GB workspace tree legitimately takes minutes. The script
+// body rides --data-urlencode, never the URL. --fail-with-body (instead
+// of -f) keeps the error body in stdout, so a 403 from a non-admin token
+// surfaces as a readable permission message instead of a bare exit code.
+function buildScriptCommand(script, jenkinsUrl, netrcPath, crumb) {
+  var args = ["curl", "-sS", "--fail-with-body", "--max-time", "600", "--netrc-file", netrcPath,
+    "-H", "Accept: application/json"]
+  if (crumb) {
+    args.push("-H", "Jenkins-Crumb: " + crumb)
+  }
+  args.push("-X", "POST", "--data-urlencode", "script=" + script,
+    jhJoinUrl(jenkinsUrl, "/scriptText"))
+  return args
+}
+
 
 // Node (test harness) export. In QML, `module` is undefined and this whole
 // block is skipped — the functions above are the import surface.
@@ -874,13 +1031,16 @@ if (typeof module !== "undefined" && module.exports) {
     folderRollups: folderRollups,
     historyAppendPt: historyAppendPt,
     historyCompactPts: historyCompactPts,
+    buildActionCommand: buildActionCommand,
+    buildScriptCommand: buildScriptCommand,
+    workspaceListScript: workspaceListScript,
+    workspaceCleanScript: workspaceCleanScript,
     historyAppendDisk: historyAppendDisk,
     historyCompactDisk: historyCompactDisk,
     historyCompactDisks: historyCompactDisks,
     historySeries: historySeries,
     sparklineSlots: sparklineSlots,
     buildNetrc: buildNetrc,
-    buildCurlArgs: buildCurlArgs,
-    buildActionCommand: buildActionCommand
+    buildCurlArgs: buildCurlArgs
   }
 }

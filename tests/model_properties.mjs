@@ -36,6 +36,7 @@ const SEVERITIES = new Set(['info', 'warn', 'error', 'critical']);
 const SECRET_RE = /sqa_|sqp_|[0-9a-fA-F]{40}/;
 const EVENT_TYPES = new Set([
   'controller-down', 'controller-up', 'node-offline', 'node-online',
+  'node-disk-low', 'node-disk-critical', 'node-disk-unknown', 'node-disk-ok',
   'job-failure', 'job-recovered', 'queue-backlog', 'queue-clear', 'maintenance',
 ]);
 
@@ -84,6 +85,9 @@ function genNode(i) {
     executors: Array.from({ length: ri(0, 8) }, () => ({ idle: chance(0.7) })),
     oneOffExecutors: [],
   };
+  if (chance(0.12)) node.oneOffExecutors = Array.from({ length: ri(1, 2) }, () => ({}));
+  if (chance(0.1)) delete node.monitorData['hudson.node_monitors.TemporarySpaceMonitor'];
+  if (chance(0.08)) node.monitorData['hudson.node_monitors.DiskSpaceMonitor'] = { path: '/', size: null };
   if (chance(0.05)) delete node.monitorData;
   if (chance(0.05)) node.monitorData = null;
   if (chance(0.05)) node.executors = null;
@@ -195,6 +199,16 @@ function snapshotInvariants(snap, cfg, ctx) {
     ok(n.level === 'ok' || n.reasons.length > 0, 'I6 non-ok node has reasons', ctx + ' ' + n.displayName);
     if (n.level === 'critical') ok(n.reasons.length > 0, 'I6 critical node has reasons', ctx);
     ok(n.utilization >= 0 && n.utilization <= 1, 'I5 utilization in [0,1]', ctx + ' ' + n.displayName);
+    // disk tier is a dedicated field (never derived from level, which
+    // folds offline/slow causes) and keys on the worse of workspace/tmp.
+    const vols = [n.diskGb, n.tmpGb].filter((v) => v !== null && v !== undefined);
+    const worst = vols.length ? Math.min(...vols) : null;
+    const expectedTier = worst === null
+      ? (n.state === 'online' ? 'unknown' : null)
+      : (worst < cfg.diskCriticalGb ? 'critical' : (worst < cfg.diskWarnGb ? 'low' : 'ok'));
+    ok(n.diskTier === expectedTier, 'I6 diskTier = tier(min(workspace, tmp))', ctx
+      + ' ' + n.displayName + ' tier=' + n.diskTier + ' want=' + expectedTier);
+    ok(n.oneOffBusy === undefined || Number.isInteger(n.oneOffBusy), 'I5 oneOffBusy integer', ctx);
   }
 
   // I7 no secrets anywhere
@@ -334,13 +348,23 @@ for (let iter = 0; iter < N; iter++) {
   ok(urlArg.startsWith('https://') && urlArg.endsWith('/api/json'), 'I13 url join', ctx + ' ' + urlArg);
   ok(args.some((a) => String(a).includes('Jenkins-Crumb')) === (crumb !== null), 'I13 crumb presence', ctx);
 
-  const action = pick(['cancelQueueItem', 'quietDown', 'cancelQuietDown', 'nodeOffline', 'nodeOnline', 'bogusAction']);
+  const action = pick(['cancelQueueItem', 'quietDown', 'cancelQuietDown', 'nodeOffline', 'nodeOnline',
+    'workspaceCleanup', 'nodeWorkspaceList', 'nodeWorkspaceClean', 'bogusAction']);
   const cmd = Model.buildActionCommand({ action, targetId: '42' }, null, url, '/tmp/n', crumb);
   if (action === 'bogusAction') {
     ok(Array.isArray(cmd) && cmd.length === 0, 'I14 unknown action → empty', ctx);
   } else {
     ok(Array.isArray(cmd) && cmd[0] === 'curl' && hasPair(cmd, '-X', 'POST'), 'I14 action POST', ctx);
     ok(cmd[cmd.length - 1].startsWith('https://'), 'I14 action url', ctx);
+  }
+  if (action === 'nodeWorkspaceList' || action === 'nodeWorkspaceClean') {
+    ok(cmd[cmd.length - 1].endsWith('/scriptText'), 'I14 scriptText url', ctx);
+    const si = cmd.indexOf('--data-urlencode');
+    ok(si !== -1 && String(cmd[si + 1]).startsWith('script='), 'I14 script body data', ctx);
+    ok(String(cmd[si + 1]).includes("getComputer('42')"), 'I14 node name interpolated', ctx);
+  }
+  if (action === 'workspaceCleanup') {
+    ok(cmd[cmd.length - 1].endsWith('/doWorkspaceCleanup'), 'I14 workspaceCleanup url', ctx);
   }
 }
 
@@ -615,6 +639,101 @@ for (let iter = 0; iter < 300; iter++) {
   ok(Model.sparklineSlots([{ t: 5, v: 5 }], 100, 90, 3).every(v => v === null),
     'H10 out-of-window points ignored', '');
 }
+
+// ------------------------------------------- disk-tier edge triggers (D*)
+// The notification contract: tier transitions fire exactly once per edge,
+// only while the node is online in the next snapshot, /tmp counts as much
+// as the workspace volume, and script-console commands stay templated.
+
+{
+  const DISK = 'hudson.node_monitors.DiskSpaceMonitor';
+  const TMP = 'hudson.node_monitors.TemporarySpaceMonitor';
+  const mk = (diskGb, tmpGb, offline) => ({
+    computer: [{
+      displayName: 'dnode', offline: !!offline, temporarilyOffline: false,
+      monitorData: {
+        [DISK]: { path: '/', size: diskGb === null ? null : diskGb * 1e9 },
+        [TMP]: { path: '/tmp', size: tmpGb === null ? null : tmpGb * 1e9 },
+      },
+      executors: [{ idle: true }],
+      oneOffExecutors: [],
+    }],
+  });
+  const cfg = { diskWarnGb: 25, diskCriticalGb: 10, notifyNodes: true };
+  const snapOf = (computer) => Model.assess(
+    Model.parseController({ mode: 'NORMAL' }, '2.568.2'),
+    Model.parseNodes(computer),
+    { depth: 0, stuck: 0, items: [] }, { total: 0, updatesAvailable: 0, plugins: [] },
+    { restartRequired: false, jobs: [], warnings: [] }, cfg, 1000);
+  const typesOf = (a, b) => Model.diffEvents(snapOf(a), snapOf(b), cfg)
+    .filter((e) => e.type.indexOf('node-disk-') === 0).map((e) => e.type);
+
+  ok(JSON.stringify(typesOf(mk(60, 50), mk(20, 50))) === JSON.stringify(['node-disk-low']),
+    'D1 ok→low fires once', '');
+  ok(JSON.stringify(typesOf(mk(20, 50), mk(5, 50))) === JSON.stringify(['node-disk-critical']),
+    'D2 low→critical fires once', '');
+  ok(JSON.stringify(typesOf(mk(5, 50), mk(60, 50))) === JSON.stringify(['node-disk-ok']),
+    'D3 critical→ok recovers', '');
+  ok(typesOf(mk(20, 50), mk(21, 50)).length === 0, 'D4 same tier → no event', '');
+  ok(typesOf(mk(5, 50), mk(5, 50, true)).length === 0,
+    'D5 going offline never fires a disk event (stale values)', '');
+  ok(typesOf(mk(60, 50), mk(null, null)).length === 0,
+    'D6 unknown transitions are Service-debounced, not diffed', '');
+  ok(JSON.stringify(typesOf(mk(60, 50), mk(60, 5))) === JSON.stringify(['node-disk-critical']),
+    'D7 tmp below critical with healthy workspace fires critical', '');
+  ok(typesOf(mk(60, 50), mk(60, 50, true)).length === 0,
+    'D9 offline stale tier does not flap against online', '');
+
+  const cfgNoNodes = { ...cfg, notifyNodes: false };
+  ok(Model.diffEvents(snapOf(mk(60, 50)), snapOf(mk(5, 50)), cfgNoNodes).length === 0,
+    'D7b notifyNodes off suppresses disk events', '');
+
+  // score: online tmp-critical node pays the −10 penalty
+  const snapTmp = snapOf(mk(60, 5));
+  const snapOk = snapOf(mk(60, 50));
+  ok(snapOk.overall.score - snapTmp.overall.score === 10,
+    'D10 online tmp-critical node penalized 10', '');
+  // offline critical node does not (offline exclusion preserved)
+  const snapOff = snapOf(mk(5, 50, true));
+  ok(snapOff.nodes[0].state === 'offline' && snapOff.overall.score === snapOk.overall.score - 8,
+    'D11 offline node pays only the offline penalty', '');
+
+  // one-off executors count toward busy without breaking utilization
+  const withOneOff = structuredClone(mk(60, 50));
+  withOneOff.computer[0].oneOffExecutors = [{}];
+  const parsedOneOff = Model.parseNodes(withOneOff);
+  const snapOneOff = snapOf(withOneOff);
+  ok(parsedOneOff.nodes[0].oneOffBusy === 1,
+    'D12 one-off busy tracked at parse', '');
+  ok(snapOneOff.nodes[0].oneOffBusy === 1 && snapOneOff.nodes[0].utilization === 0,
+    'D12 one-off busy surfaces in snapshot, utilization intact', '');
+
+  // script templates: fixed shape, escaped name, no other interpolation
+  const listScript = Model.workspaceListScript("a'b\\c");
+  ok(listScript.includes("getComputer('a\\'b\\\\c')"),
+    'D13 node name escaped in Groovy literal', listScript);
+  ok(!listScript.includes('deleteRecursive'), 'D13 list script never deletes', '');
+  // built-in node: name is "" and displayName is "Built-In Node" — the
+  // templates must fall back to a displayName match or the feature is
+  // dead on the one node that needs it most
+  ok(Model.workspaceListScript('Built-In Node').includes("displayName == 'Built-In Node'")
+    && Model.workspaceCleanScript('Built-In Node').includes("displayName == 'Built-In Node'"),
+    'D16 templates resolve computers by displayName fallback', '');
+  const cleanScript = Model.workspaceCleanScript('dnode');
+  ok(cleanScript.includes('NODE_BUSY') && cleanScript.includes('!c.idle'),
+    'D14 clean script guards idleness server-side', '');
+  ok(cleanScript.includes('deleteRecursive') && cleanScript.includes('isBuilding'),
+    'D14 clean script deletes non-building dirs only', '');
+  const scriptCmd = Model.buildScriptCommand(cleanScript, 'https://ci.example.com/', '/tmp/n', 'cr');
+  ok(scriptCmd[0] === 'curl' && hasPair(scriptCmd, '--data-urlencode', 'script=' + cleanScript),
+    'D15 script body rides --data-urlencode', '');
+  ok(scriptCmd[scriptCmd.length - 1] === 'https://ci.example.com/scriptText',
+    'D15 scriptText endpoint joined', '');
+  ok(hasPair(scriptCmd, '--max-time', '600'), 'D15 script sweep gets a long timeout', '');
+  ok(scriptCmd.includes('--fail-with-body') && !scriptCmd.includes('-fsS '),
+    'D15 script command keeps the error body on HTTP failures', '');
+}
+
 // ------------------------------------------------------------------- summary
 
 console.log(`property sweep: ${N} scenarios, ${checks} checks`);

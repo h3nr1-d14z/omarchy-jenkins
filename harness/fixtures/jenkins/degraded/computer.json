@@ -9,12 +9,36 @@
       "temporarilyOffline": false,
       "offlineCauseReason": "",
       "monitorData": {
-        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/var/lib/jenkins", "size": 48000000000},
-        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
-        "hudson.node_monitors.ResponseTimeMonitor": {"average": 95},
+        "hudson.node_monitors.DiskSpaceMonitor": {
+          "path": "/var/lib/jenkins",
+          "size": 48000000000
+        },
+        "hudson.node_monitors.TemporarySpaceMonitor": {
+          "path": "/tmp",
+          "size": 100000000000
+        },
+        "hudson.node_monitors.ResponseTimeMonitor": {
+          "average": 95
+        },
         "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
       },
-      "executors": [{"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "executors": [
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        }
+      ],
       "oneOffExecutors": []
     },
     {
@@ -24,12 +48,36 @@
       "temporarilyOffline": false,
       "offlineCauseReason": "",
       "monitorData": {
-        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/home/jenkins/agent", "size": 110000000000},
-        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
-        "hudson.node_monitors.ResponseTimeMonitor": {"average": 250},
+        "hudson.node_monitors.DiskSpaceMonitor": {
+          "path": "/home/jenkins/agent",
+          "size": 110000000000
+        },
+        "hudson.node_monitors.TemporarySpaceMonitor": {
+          "path": "/tmp",
+          "size": 100000000000
+        },
+        "hudson.node_monitors.ResponseTimeMonitor": {
+          "average": 250
+        },
         "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
       },
-      "executors": [{"idle": false}, {"idle": false}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "executors": [
+        {
+          "idle": false
+        },
+        {
+          "idle": false
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        }
+      ],
       "oneOffExecutors": []
     },
     {
@@ -39,12 +87,36 @@
       "temporarilyOffline": false,
       "offlineCauseReason": "",
       "monitorData": {
-        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/home/jenkins/agent", "size": 32000000000},
-        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
-        "hudson.node_monitors.ResponseTimeMonitor": {"average": 1200},
+        "hudson.node_monitors.DiskSpaceMonitor": {
+          "path": "/home/jenkins/agent",
+          "size": 32000000000
+        },
+        "hudson.node_monitors.TemporarySpaceMonitor": {
+          "path": "/tmp",
+          "size": 100000000000
+        },
+        "hudson.node_monitors.ResponseTimeMonitor": {
+          "average": 1200
+        },
         "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
       },
-      "executors": [{"idle": false}, {"idle": false}, {"idle": false}, {"idle": true}, {"idle": true}],
+      "executors": [
+        {
+          "idle": false
+        },
+        {
+          "idle": false
+        },
+        {
+          "idle": false
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        }
+      ],
       "oneOffExecutors": []
     },
     {
@@ -54,12 +126,36 @@
       "temporarilyOffline": false,
       "offlineCauseReason": "Disk space is too low (9 GB left on /var/lib/jenkins)",
       "monitorData": {
-        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/home/jenkins/agent", "size": 9000000000},
-        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
-        "hudson.node_monitors.ResponseTimeMonitor": {"average": 3200},
+        "hudson.node_monitors.DiskSpaceMonitor": {
+          "path": "/home/jenkins/agent",
+          "size": 9000000000
+        },
+        "hudson.node_monitors.TemporarySpaceMonitor": {
+          "path": "/tmp",
+          "size": 100000000000
+        },
+        "hudson.node_monitors.ResponseTimeMonitor": {
+          "average": 3200
+        },
         "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
       },
-      "executors": [{"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "executors": [
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        }
+      ],
       "oneOffExecutors": []
     },
     {
@@ -69,12 +165,36 @@
       "temporarilyOffline": false,
       "offlineCauseReason": "",
       "monitorData": {
-        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/home/jenkins/agent", "size": 75000000000},
-        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
-        "hudson.node_monitors.ResponseTimeMonitor": {"average": 55},
+        "hudson.node_monitors.DiskSpaceMonitor": {
+          "path": "/home/jenkins/agent",
+          "size": 75000000000
+        },
+        "hudson.node_monitors.TemporarySpaceMonitor": {
+          "path": "/tmp",
+          "size": 100000000000
+        },
+        "hudson.node_monitors.ResponseTimeMonitor": {
+          "average": 55
+        },
         "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
       },
-      "executors": [{"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "executors": [
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        }
+      ],
       "oneOffExecutors": []
     },
     {
@@ -84,12 +204,36 @@
       "temporarilyOffline": false,
       "offlineCauseReason": "",
       "monitorData": {
-        "hudson.node_monitors.DiskSpaceMonitor": {"path": "/home/jenkins/agent", "size": 60000000000},
-        "hudson.node_monitors.TemporarySpaceMonitor": {"path": "/tmp", "size": 21474836480},
-        "hudson.node_monitors.ResponseTimeMonitor": {"average": 48},
+        "hudson.node_monitors.DiskSpaceMonitor": {
+          "path": "/home/jenkins/agent",
+          "size": 60000000000
+        },
+        "hudson.node_monitors.TemporarySpaceMonitor": {
+          "path": "/tmp",
+          "size": 100000000000
+        },
+        "hudson.node_monitors.ResponseTimeMonitor": {
+          "average": 48
+        },
         "hudson.node_monitors.ArchitectureMonitor": "Linux (amd64)"
       },
-      "executors": [{"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}, {"idle": true}],
+      "executors": [
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        },
+        {
+          "idle": true
+        }
+      ],
       "oneOffExecutors": []
     }
   ]

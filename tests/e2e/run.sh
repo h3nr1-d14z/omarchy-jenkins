@@ -225,7 +225,9 @@ EOF
 # previously verified only in unit tests. Polls are driven EXPLICITLY via
 # the refresh IPC after each mock switch, so no poll can land inside a
 # switch window. Expected: exactly 5 notifications — 3 recovery (info),
-# controller-down (critical), controller-up (info).
+# controller-down (critical), controller-up (info). (The recovery-phase
+# variant below adds disk recovery: degraded build-agent-03 has 9 GB
+# free, healthy 90 GB, so degraded→healthy also fires node-disk-ok.)
 
 run_recovery_phase() {
   local shim_dir notify_log
@@ -277,13 +279,13 @@ EOF
 
   local count
   count=$(wc -l < "$notify_log")
-  if [ "$count" -ne 5 ]; then
-    echo "FAIL: recovery phase — expected 5 notifications, got $count (see stderr)"
+  if [ "$count" -ne 6 ]; then
+    echo "FAIL: recovery phase — expected 6 notifications, got $count (see stderr)"
     FAILED=1
     return
   fi
   local want
-  for want in "Jenkins node online" "Jenkins jobs recovered" "Jenkins queue clear" "Jenkins controller down" "Jenkins controller is back up"; do
+  for want in "Jenkins node online" "Jenkins node disk recovered" "Jenkins jobs recovered" "Jenkins queue clear" "Jenkins controller down" "Jenkins controller is back up"; do
     if [ "$(grep -c "$want" "$notify_log")" != "1" ]; then
       echo "FAIL: recovery phase — '$want' not present exactly once (see stderr)"
       FAILED=1
@@ -295,7 +297,7 @@ EOF
     FAILED=1
     return
   fi
-  echo "PASS: recovery + controller transitions (node-online, job-recovered, queue-clear, controller-down critical, controller-up)"
+  echo "PASS: recovery + controller transitions (node-online, node-disk-ok, job-recovered, queue-clear, controller-down critical, controller-up)"
 }
 
 # ---- phase 3: IPC surface ---------------------------------------------------
@@ -367,7 +369,7 @@ run_widget_phase() {
     FAILED=1
     return
   fi
-  if ! printf '%s' "${w1#JH-E2E-W1 }" | jq -e '(.registered == 1) and (.widgetState == "ok") and (.chipText == "100") and (.serviceState == "ok")' >/dev/null 2>&1; then
+  if ! printf '%s' "${w1#JH-E2E-W1 }" | jq -e '(.registered == 1) and (.widgetState == "ok") and (.chipText == "100") and (.serviceState == "ok") and (.cleanWired == true)' >/dev/null 2>&1; then
     echo "FAIL: widget load — W1 invariant not met: $w1"
     FAILED=1
     return
@@ -480,6 +482,7 @@ run_interaction_phase() {
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import unquote_plus
 
 port = int(sys.argv[1])
 log = sys.argv[2]
@@ -518,12 +521,21 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
-        if n:
-            self.rfile.read(n)
+        body = self.rfile.read(n).decode("utf-8", "replace") if n else ""
         with open(log, "a") as f:
             f.write("POST %s\n" % self.path)
             f.write("crumb: %s\n" % self.headers.get("Jenkins-Crumb", ""))
-        self._reply(200, b'{}')
+            if self.path == "/scriptText":
+                # the node name is the only interpolated value; prove the
+                # body actually carries it
+                f.write("script-name: %s\n" % ("build-agent-03" in unquote_plus(body) or "Built-In Node" in unquote_plus(body)))
+        if self.path == "/scriptText":
+            if "deleteRecursive" in body:
+                self._reply(200, b"RESULT deleted=2 skipped=0 errors=0\n", "text/plain")
+            else:
+                self._reply(200, b"DIR alpha\nDIR beta\nLISTED 2\n", "text/plain")
+        else:
+            self._reply(200, b'{}')
 
     def log_message(self, *a):
         pass
@@ -568,7 +580,7 @@ PYEOF2
   fi
   local d
   d=$(grep -o 'JH-E2E-I {.*}' "$TOKEN_DIR/interaction.log" | tail -n1 || true)
-  if [ -z "$d" ] || ! printf '%s' "${d#JH-E2E-I }" | jq -e '(.actionMessage == "action sent") and (.queueDepth == 12) and (.activityProbe.tab == "activity") and (.activityProbe.sawBuilding == true) and (.activityProbe.sawRecent == true) and (.tabHeights.activity > .tabHeights.jobs)' >/dev/null 2>&1; then
+  if [ -z "$d" ] || ! printf '%s' "${d#JH-E2E-I }" | jq -e '(.actionMessage == "deleted 2 workspace dirs (skipped 0, failed 0)") and (.queueDepth == 12) and (.activityProbe.tab == "activity") and (.activityProbe.sawBuilding == true) and (.activityProbe.sawRecent == true) and (.tabHeights.activity > .tabHeights.jobs)' >/dev/null 2>&1; then
     echo "FAIL: interaction — dump wrong: $d"
     FAILED=1
     rm -f "$srv" "$log"
@@ -577,13 +589,13 @@ PYEOF2
   local posts crumbs
   posts=$(grep -c "^POST " "$log" || true)
   crumbs=$(grep -c "crumb: action-crumb-1" "$log" || true)
-  if [ "$posts" -ne 3 ] || [ "$crumbs" -ne 3 ]; then
-    echo "FAIL: interaction — expected 3 POSTs with crumbs, got $posts/$crumbs (see stderr)"
+  if [ "$posts" -ne 5 ] || [ "$crumbs" -ne 5 ]; then
+    echo "FAIL: interaction — expected 5 POSTs with crumbs, got $posts/$crumbs (see stderr)"
     FAILED=1
     rm -f "$srv" "$log"
     return
   fi
-  for want in "POST /computer/build-agent-03/doChangeOffline?offline=false" "POST /queue/cancelItem?id=201" "POST /quietDown"; do
+  for want in "POST /computer/build-agent-03/doChangeOffline?offline=false" "POST /queue/cancelItem?id=201" "POST /quietDown" "POST /scriptText"; do
     if ! grep -qF "$want" "$log"; then
       echo "FAIL: interaction — missing '$want' (see stderr)"
       FAILED=1
@@ -591,8 +603,15 @@ PYEOF2
       return
     fi
   done
+  if [ "$(grep -c '^POST /scriptText' "$log" || true)" -ne 2 ] \
+     || ! grep -q 'script-name: True' "$log"; then
+    echo "FAIL: interaction — scriptText list+clean POSTs with node name missing (see stderr)"
+    FAILED=1
+    rm -f "$srv" "$log"
+    return
+  fi
   rm -f "$srv" "$log"
-  echo "PASS: panel click-through (Bring online → nodeOnline, Cancel → cancelItem?id=201, Quiet down → quietDown)"
+  echo "PASS: panel click-through (Bring online, Cancel, Quiet down, Clean ws list → scriptText, Delete → scriptText)"
 }
 
 run_render_both_phases() {
@@ -632,6 +651,7 @@ run_action_phase() {
   cat > "$action_srv" <<'PYEOF'
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import unquote_plus
 
 port = int(sys.argv[1])
 log = sys.argv[2]
@@ -653,15 +673,21 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
-        if n:
-            self.rfile.read(n)
+        body = self.rfile.read(n).decode("utf-8", "replace") if n else ""
         with open(log, "a") as f:
             f.write("POST %s\n" % self.path)
             f.write("crumb: %s\n" % self.headers.get("Jenkins-Crumb", ""))
+            if self.path == "/scriptText":
+                f.write("script-name: %s\n" % ("build-agent-03" in unquote_plus(body)))
         # cancelQuietDown is rejected — exercising the action-FAILURE
         # feedback path (curl -f exits 22 on the 500).
         if self.path == "/cancelQuietDown":
             self._reply(500, b'{}')
+        elif self.path == "/scriptText":
+            if "deleteRecursive" in body:
+                self._reply(200, b"RESULT deleted=1 skipped=0 errors=0\n")
+            else:
+                self._reply(200, b"DIR alpha\nLISTED 1\n")
         else:
             self._reply(200, b'{}')
 
@@ -706,13 +732,20 @@ PYEOF
   local posts crumbs
   posts=$(grep -c "^POST " "$action_log" || true)
   crumbs=$(grep -c "crumb: action-crumb-1" "$action_log" || true)
-  if [ "$posts" -ne 4 ] || [ "$crumbs" -ne 4 ]; then
-    echo "FAIL: action phase — expected 4 POSTs with crumbs, got $posts/$crumbs (see stderr)"
+  if [ "$posts" -ne 7 ] || [ "$crumbs" -ne 7 ]; then
+    echo "FAIL: action phase — expected 7 POSTs with crumbs, got $posts/$crumbs (see stderr)"
     FAILED=1
     rm -f "$action_srv" "$action_log"
     return
   fi
-  for want in "POST /quietDown" "POST /queue/cancelItem?id=207" "POST /computer/build-agent-03/doChangeOffline" "POST /cancelQuietDown"; do
+  if [ "$(grep -c '^POST /scriptText' "$action_log" || true)" -ne 2 ] \
+     || ! grep -q 'script-name: True' "$action_log"; then
+    echo "FAIL: action phase — scriptText POSTs with node name missing (see stderr)"
+    FAILED=1
+    rm -f "$action_srv" "$action_log"
+    return
+  fi
+  for want in "POST /quietDown" "POST /queue/cancelItem?id=207" "POST /computer/build-agent-03/doChangeOffline" "POST /doWorkspaceCleanup" "POST /scriptText" "POST /cancelQuietDown"; do
     if ! grep -qF "$want" "$action_log"; then
       echo "FAIL: action phase — missing '$want' (see stderr)"
       FAILED=1

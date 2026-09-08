@@ -188,9 +188,22 @@ Item {
   }
 
   function nodeStats(n) {
-    return fmtGb(n.diskGb) + " · " + (n.responseTimeMs === null || n.responseTimeMs === undefined
-      ? "?" : n.responseTimeMs + "ms")
+    return fmtGb(n.diskGb) + " · " + fmtGb(n.tmpGb) + " tmp · "
+      + (n.responseTimeMs === null || n.responseTimeMs === undefined
+        ? "?" : n.responseTimeMs + "ms")
       + " · " + (n.executorsTotal - n.executorsIdle) + "/" + n.executorsTotal
+      + ((n.oneOffBusy || 0) > 0 ? " +" + n.oneOffBusy : "")
+  }
+
+  // Workspace cleanup is off by default (script-console actions need an
+  // admin-scoped token); the per-node buttons only render when the user
+  // turned the feature on in the plugin settings.
+  readonly property bool cleanWorkspaceEnabled: root.service && root.service.config
+    && root.service.config.enableCleanWorkspace === true
+
+  function nodeWorkspacePreview(n) {
+    var p = root.service ? root.service.workspacePreview : null
+    return p && p.node === n.displayName ? p : null
   }
 
   // The popup sizes to the ACTIVE tab's content (capped to the screen by
@@ -505,6 +518,19 @@ Item {
                   ? "cancelQuietDown" : "quietDown", null)
             }
           }
+
+          // Jenkins' own retention-aware workspace cleanup (skips
+          // in-use and recent workspaces, all nodes). Same privilege
+          // class as the per-node wipe (both need an admin token), so
+          // both live behind enableCleanWorkspace.
+          Button {
+            visible: root.cleanWorkspaceEnabled
+            text: "Clean up workspaces"
+            enabled: root.actionsEnabled
+            onClicked: if (root.service) {
+              root.service.runAction("workspaceCleanup", null)
+            }
+          }
         }
 
         Text {
@@ -541,6 +567,7 @@ Item {
             width: parent.width
             height: nodeLine.height
               + (nodeDisk.visible ? nodeDisk.height + Style.space(2) : 0)
+              + (nodePreview.visible ? nodePreview.height + Style.space(2) : 0)
 
             Item {
               id: nodeLine
@@ -551,23 +578,36 @@ Item {
                 id: nodeName
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - nodeStats.width - nodeAction.width - Style.space(24)
+                width: parent.width - nodeStats.width - nodeClean.width - nodeAction.width - Style.space(24)
                 elide: Text.ElideRight
                 text: (modelData.state === "offline" ? "○ " : "● ") + modelData.displayName
                 color: root.nodeColor(modelData)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.body
               }
-
               Text {
                 id: nodeStats
-                anchors.right: nodeAction.left
+                anchors.right: nodeClean.left
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.nodeStats(modelData)
                 color: Color.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
+              }
+              Button {
+                id: nodeClean
+                visible: root.cleanWorkspaceEnabled && modelData.state === "online"
+                width: visible ? implicitWidth : 0
+                anchors.right: nodeAction.left
+                anchors.rightMargin: Style.space(4)
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Clean ws"
+                fontSize: Style.font.bodySmall
+                enabled: root.actionsEnabled
+                onClicked: if (root.service) {
+                  root.service.runAction("nodeWorkspaceList", modelData.displayName)
+                }
               }
 
               Button {
@@ -613,6 +653,86 @@ Item {
                   root.nodeDiskSlots(modelData).filter(function (v) { return v !== null }).concat([1])))
                 baseColor: root.foreground
                 barColor: root.diskBarColor
+              }
+            }
+
+            // Workspace-cleanup dry-run and confirm row. "Clean ws" set
+            // the service's workspacePreview for this node; the Delete
+            // button is the explicit second step, and the server-side
+            // script still re-checks that the node is online and idle
+            // before deleting anything. Scope: workspaces under this
+            // node's default workspace root only.
+            Item {
+              id: nodePreview
+              visible: root.cleanWorkspaceEnabled && !!root.nodeWorkspacePreview(modelData)
+              anchors.top: nodeLine.bottom
+              anchors.topMargin: nodeDisk.visible
+                ? nodeDisk.height + Style.space(4) : Style.space(2)
+              width: parent.width
+              height: previewCol.implicitHeight
+
+              Column {
+                id: previewCol
+                width: parent.width
+                spacing: Style.space(2)
+
+                Text {
+                  width: parent.width
+                  wrapMode: Text.Wrap
+                  visible: root.nodeWorkspacePreview(modelData)
+                    && root.nodeWorkspacePreview(modelData).error !== ""
+                  text: {
+                    var p = root.nodeWorkspacePreview(modelData)
+                    return p && p.error ? "workspace list failed: " + p.error : ""
+                  }
+                  color: Color.urgent
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
+                }
+
+                Text {
+                  width: parent.width
+                  wrapMode: Text.Wrap
+                  maximumLineCount: 3
+                  elide: Text.ElideRight
+                  visible: root.nodeWorkspacePreview(modelData)
+                    && !root.nodeWorkspacePreview(modelData).error
+                  text: {
+                    var p = root.nodeWorkspacePreview(modelData)
+                    return p ? p.dirs.length
+                      + " workspace dirs under this node's default root: "
+                      + (p.dirs.length > 0 ? p.dirs.join(", ") : "(none)") : ""
+                  }
+                  color: Color.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
+                }
+
+                Row {
+                  spacing: Style.space(4)
+                  visible: root.nodeWorkspacePreview(modelData)
+                    && !root.nodeWorkspacePreview(modelData).error
+                    && root.nodeWorkspacePreview(modelData).dirs.length > 0
+
+                  Button {
+                    text: {
+                      var p = root.nodeWorkspacePreview(modelData)
+                      return "Delete (" + (p ? p.dirs.length : 0) + ")"
+                    }
+                    foreground: Color.urgent
+                    fontSize: Style.font.bodySmall
+                    enabled: root.actionsEnabled
+                    onClicked: if (root.service) {
+                      root.service.runAction("nodeWorkspaceClean", modelData.displayName)
+                    }
+                  }
+
+                  Button {
+                    text: "Cancel"
+                    fontSize: Style.font.bodySmall
+                    onClicked: if (root.service) root.service.clearWorkspacePreview()
+                  }
+                }
               }
             }
           }

@@ -27,7 +27,7 @@ ShellRoot {
   property int actionIndex: 0
 
   Component.onCompleted: {
-    var raw = String(Quickshell.env("JH_E2E_ACTIONS") || "quietDown,cancelQueueItem:207,nodeOffline:build-agent-03,cancelQuietDown")
+    var raw = String(Quickshell.env("JH_E2E_ACTIONS") || "quietDown,cancelQueueItem:207,nodeOffline:build-agent-03,workspaceCleanup,nodeWorkspaceList:build-agent-03,nodeWorkspaceClean:build-agent-03,cancelQuietDown")
     var list = []
     var parts = raw.split(",")
     for (var i = 0; i < parts.length; i++) {
@@ -84,16 +84,17 @@ ShellRoot {
   }
 
   Timer {
-    // 4 actions fire at 2.0/2.6/3.2/3.8s; each chain (crumb + POST) takes
-    // ~0.1s locally, so the last action's feedback — success or failure —
-    // is stable well before this dump.
-    interval: 5200
+    // 7 actions fire at 2.0s then every 0.6s (last at 5.6s); each chain
+    // (crumb + POST) takes ~0.1s locally, so the last action's feedback —
+    // success or failure — is stable well before this dump.
+    interval: 7200
     running: true
     repeat: false
     onTriggered: {
       console.log("JH-E2E-A " + JSON.stringify({
         actionMessage: service.actionMessage,
-        state: service.state
+        state: service.state,
+        workspacePreview: service.workspacePreview
       }))
       Qt.quit()
     }

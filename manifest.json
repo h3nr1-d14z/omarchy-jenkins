@@ -2,11 +2,14 @@
   "schemaVersion": 1,
   "id": "h3nr1.d14z.jenkins",
   "name": "Jenkins Health",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "H3nr1 D14z",
   "license": "MIT",
-  "description": "Jenkins controller health in the Omarchy bar: live polling of controller, nodes, queue, jobs, and plugin updates; a notification layer for controller outages, node changes, job failures, queue backlogs, and maintenance; and safe actions (quiet-down toggle, cancel queue item, node online/offline).",
-  "kinds": ["service", "bar-widget"],
+  "description": "Jenkins controller health in the Omarchy bar: live polling of controller, nodes (workspace and /tmp disk), queue, jobs, and plugin updates; notifications for controller outages, node state and disk changes, job failures, queue backlogs, and maintenance; safe actions (quiet-down toggle, cancel queue item, node online/offline) plus opt-in workspace cleanup buttons (Jenkins' retention-aware pass and an admin-token per-node wipe).",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
   "keepLoaded": true,
   "entryPoints": {
     "service": "Service.qml",
@@ -16,7 +19,10 @@
     "displayName": "Jenkins",
     "description": "Jenkins health monitor: status chip in the bar, detail panel on click. Middle-click refreshes.",
     "category": "System",
-    "aliases": ["jenkins", "ci"],
+    "aliases": [
+      "jenkins",
+      "ci"
+    ],
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
@@ -30,20 +36,149 @@
       "notifyMaintenance": "On"
     },
     "schema": [
-      {"key": "jenkinsUrl", "type": "string", "label": "Jenkins URL", "defaultValue": "", "description": "Base URL of the Jenkins controller, e.g. https://ci.example.com"},
-      {"key": "jenkinsUser", "type": "string", "label": "API user", "defaultValue": "", "description": "Jenkins user id that owns the API token."},
-      {"key": "tokenFile", "type": "string", "label": "Token file", "defaultValue": "~/.config/jenkins-health/token", "description": "File holding the Jenkins API token. Created with chmod 600; the token is passed to curl via a netrc file, never as a process argument."},
-      {"key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 5, "max": 3600, "step": 5, "defaultValue": 30},
-      {"key": "queueBacklogThreshold", "type": "integer", "label": "Queue backlog threshold", "min": 1, "max": 500, "defaultValue": 10, "description": "Waiting queue depth above which a backlog is flagged."},
-      {"key": "diskWarnGb", "type": "integer", "label": "Disk warn (GB free)", "min": 1, "max": 2000, "defaultValue": 25, "description": "Node free disk space below this warns."},
-      {"key": "diskCriticalGb", "type": "integer", "label": "Disk critical (GB free)", "min": 0, "max": 2000, "defaultValue": 10, "description": "Node free disk space below this is critical."},
-      {"key": "responseTimeWarnMs", "type": "integer", "label": "Response time warn (ms)", "min": 100, "max": 60000, "step": 100, "defaultValue": 1000, "description": "Node response time above this warns."},
-      {"key": "failurePenaltyCap", "type": "integer", "label": "Failure penalty cap", "min": 0, "max": 100, "step": 1, "defaultValue": 0, "description": "Max score points subtracted for failing jobs (0 = uncapped). Set when a large catalog carries a habitual red minority."},
-      {"key": "notifyController", "type": "enum", "label": "Controller notifications", "options": ["On", "Off"], "defaultValue": "On", "description": "Notify when the controller goes down or comes back up."},
-      {"key": "notifyNodes", "type": "enum", "label": "Node notifications", "options": ["On", "Off"], "defaultValue": "On", "description": "Notify when nodes go offline or come back."},
-      {"key": "notifyFailures", "type": "enum", "label": "Failure notifications", "options": ["On", "Off"], "defaultValue": "On", "description": "Notify on new job failures and recoveries."},
-      {"key": "notifyQueue", "type": "enum", "label": "Queue notifications", "options": ["On", "Off"], "defaultValue": "On", "description": "Notify when a queue backlog starts or clears."},
-      {"key": "notifyMaintenance", "type": "enum", "label": "Maintenance notifications", "options": ["On", "Off"], "defaultValue": "On", "description": "Notify on quiet-down, restart required, and plugin updates."}
+      {
+        "key": "jenkinsUrl",
+        "type": "string",
+        "label": "Jenkins URL",
+        "defaultValue": "",
+        "description": "Base URL of the Jenkins controller, e.g. https://ci.example.com"
+      },
+      {
+        "key": "jenkinsUser",
+        "type": "string",
+        "label": "API user",
+        "defaultValue": "",
+        "description": "Jenkins user id that owns the API token."
+      },
+      {
+        "key": "tokenFile",
+        "type": "string",
+        "label": "Token file",
+        "defaultValue": "~/.config/jenkins-health/token",
+        "description": "File holding the Jenkins API token. Created with chmod 600; the token is passed to curl via a netrc file, never as a process argument."
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "queueBacklogThreshold",
+        "type": "integer",
+        "label": "Queue backlog threshold",
+        "min": 1,
+        "max": 500,
+        "defaultValue": 10,
+        "description": "Waiting queue depth above which a backlog is flagged."
+      },
+      {
+        "key": "diskWarnGb",
+        "type": "integer",
+        "label": "Disk warn (GB free)",
+        "min": 1,
+        "max": 2000,
+        "defaultValue": 25,
+        "description": "Node free disk space below this warns."
+      },
+      {
+        "key": "diskCriticalGb",
+        "type": "integer",
+        "label": "Disk critical (GB free)",
+        "min": 0,
+        "max": 2000,
+        "defaultValue": 10,
+        "description": "Node free disk space below this is critical."
+      },
+      {
+        "key": "responseTimeWarnMs",
+        "type": "integer",
+        "label": "Response time warn (ms)",
+        "min": 100,
+        "max": 60000,
+        "step": 100,
+        "defaultValue": 1000,
+        "description": "Node response time above this warns."
+      },
+      {
+        "key": "failurePenaltyCap",
+        "type": "integer",
+        "label": "Failure penalty cap",
+        "min": 0,
+        "max": 100,
+        "step": 1,
+        "defaultValue": 0,
+        "description": "Max score points subtracted for failing jobs (0 = uncapped). Set when a large catalog carries a habitual red minority."
+      },
+      {
+        "key": "notifyController",
+        "type": "enum",
+        "label": "Controller notifications",
+        "options": [
+          "On",
+          "Off"
+        ],
+        "defaultValue": "On",
+        "description": "Notify when the controller goes down or comes back up."
+      },
+      {
+        "key": "notifyNodes",
+        "type": "enum",
+        "label": "Node notifications",
+        "options": [
+          "On",
+          "Off"
+        ],
+        "defaultValue": "On",
+        "description": "Notify when nodes go offline or come back."
+      },
+      {
+        "key": "notifyFailures",
+        "type": "enum",
+        "label": "Failure notifications",
+        "options": [
+          "On",
+          "Off"
+        ],
+        "defaultValue": "On",
+        "description": "Notify on new job failures and recoveries."
+      },
+      {
+        "key": "notifyQueue",
+        "type": "enum",
+        "label": "Queue notifications",
+        "options": [
+          "On",
+          "Off"
+        ],
+        "defaultValue": "On",
+        "description": "Notify when a queue backlog starts or clears."
+      },
+      {
+        "key": "notifyMaintenance",
+        "type": "enum",
+        "label": "Maintenance notifications",
+        "options": [
+          "On",
+          "Off"
+        ],
+        "defaultValue": "On",
+        "description": "Notify on quiet-down, restart required, and plugin updates."
+      },
+      {
+        "key": "enableCleanWorkspace",
+        "type": "enum",
+        "label": "Per-node workspace wipe",
+        "options": [
+          "Off",
+          "On"
+        ],
+        "defaultValue": "Off",
+        "description": "Off by default. When On, shows the controller-wide workspace cleanup button and per-node Clean ws buttons (list, then confirm-delete, workspaces under the node's default root). Both require an admin-scoped API token; the delete re-checks node idleness server-side."
+      }
     ]
   }
 }

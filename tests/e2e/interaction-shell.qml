@@ -65,6 +65,7 @@ ShellRoot {
       diskWarnGb: 25,
       diskCriticalGb: 10,
       responseTimeWarnMs: 1000,
+      enableCleanWorkspace: true,
       notifyController: false,
       notifyNodes: false,
       notifyFailures: false,
@@ -93,10 +94,26 @@ ShellRoot {
     return acc
   }
 
+  // Effective visibility: QML `visible` is local — a Button inside a
+  // hidden ancestor still reports visible=true. Walk the parent chain.
+  function effectivelyVisible(item) {
+    var p = item
+    while (p && p !== panel) {
+      if (p.visible === false) return false
+      p = p.parent
+    }
+    return true
+  }
+
+  // Clicks the first EFFECTIVELY VISIBLE button matching the text
+  // exactly — a real user cannot click a hidden button, and hidden
+  // matches (e.g. the workspace-preview Cancel while no preview is
+  // open, or buttons on an inactive tab) would swallow clicks meant
+  // for a visible same-named button elsewhere.
   function clickButtonByText(text) {
     var buttons = collectButtons(panel, [])
     for (var i = 0; i < buttons.length; i++) {
-      if (buttons[i].text === text) {
+      if (buttons[i].text === text && effectivelyVisible(buttons[i])) {
         buttons[i].clicked()
         return true
       }
@@ -104,7 +121,6 @@ ShellRoot {
     console.log("JH-E2E-I-MISSING " + text + " (buttons seen: " + buttons.length + ")")
     return false
   }
-
   // Tab labels carry dynamic counts ("Nodes · 6"), so tabs are matched by
   // prefix while action buttons keep exact matching.
   function clickTab(prefix) {
@@ -164,11 +180,15 @@ ShellRoot {
         clickButtonByText("Quiet down")
       } else if (step === 3) {
         tabHeights.overview = Math.round(panel.implicitHeight)
-        clickTab("Jobs")
+        clickTab("Nodes")
+        clickButtonByText("Clean ws")     // first online node: dry-run list
       } else if (step === 4) {
+        clickButtonByText("Delete (2)")   // confirm: nodeWorkspaceClean
+        clickTab("Jobs")
+      } else if (step === 5) {
         tabHeights.jobs = Math.round(panel.implicitHeight)
         clickTab("Activity")
-      } else if (step === 5) {
+      } else if (step === 6) {
         tabHeights.activity = Math.round(panel.implicitHeight)
         var texts = scanTexts(panel, [])
         activityProbe = {
