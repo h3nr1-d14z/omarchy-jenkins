@@ -212,8 +212,8 @@ EOF
       return
     fi
   done
-  if ! grep -q '"state":"warn"' "$SHIM_DIR/qs.log" || ! grep -q '"score":60' "$SHIM_DIR/qs.log"; then
-    echo "FAIL: notification flow — final dump is not degraded warn/60 (see stderr)"
+  if ! grep -q '"state":"warn"' "$SHIM_DIR/qs.log" || ! grep -q '"score":50' "$SHIM_DIR/qs.log"; then
+    echo "FAIL: notification flow — final dump is not degraded warn/50 (see stderr)"
     FAILED=1
     return
   fi
@@ -384,7 +384,7 @@ run_widget_phase() {
     FAILED=1
     return
   fi
-  if ! printf '%s' "${w1#JH-E2E-W1 }" | jq -e '(.registered == 1) and (.widgetState == "ok") and (.chipText == "100") and (.serviceState == "ok") and (.cleanWired == true) and (.diskProbeWired == true)' >/dev/null 2>&1; then
+  if ! printf '%s' "${w1#JH-E2E-W1 }" | jq -e '(.registered == 1) and (.widgetState == "ok") and (.chipText == "100") and (.serviceState == "ok") and (.cleanWired == true) and (.diskProbeWired == true) and (.pctWired == true)' >/dev/null 2>&1; then
     echo "FAIL: widget load — W1 invariant not met: $w1"
     FAILED=1
     return
@@ -408,7 +408,7 @@ run_widget_phase() {
 run_scenario healthy \
   '(.state == "ok") and (.score == 100) and (.version == "2.440.3") and (.nodes == 6) and (.queueDepth == 2) and (.controllerStatus == "up") and (.failing == 0)'
 run_scenario degraded \
-  '(.state == "warn") and (.score == 60) and (.nodes == 6) and (.queueDepth == 12) and (.controllerStatus == "up") and (.failing == 2) and (.firstFailing == "ci/integration-tests")'
+  '(.state == "warn") and (.score == 50) and (.nodes == 6) and (.queueDepth == 12) and (.controllerStatus == "up") and (.failing == 2) and (.firstFailing == "ci/integration-tests")'
 run_scenario outage \
   '(.state == "critical") and (.score == 0) and (.controllerStatus == "unreachable")'
 
@@ -527,6 +527,11 @@ class H(BaseHTTPRequestHandler):
         # /api/json gets the flat one.
         if path == "/crumbIssuer/api/json":
             self._reply(200, b'{"crumb":"action-crumb-1","crumbRequestField":"Jenkins-Crumb"}')
+        elif path == "/computer/build-agent-03/api/json":
+            # node-offline state read for the toggle flow: build-agent-03
+            # is offline in the degraded fixture, so Bring online reads
+            # offline=true and POSTs the flip.
+            self._reply(200, b'{"offline": true, "temporarilyOffline": true}')
         elif path == "/api/json" and "tree=" in self.path and (fixtures / "api-tree.json").exists():
             self._reply(200, (fixtures / "api-tree.json").read_bytes())
         elif path in routes:
@@ -546,7 +551,7 @@ class H(BaseHTTPRequestHandler):
                 f.write("script-name: %s\n" % ("build-agent-03" in unquote_plus(body) or "Built-In Node" in unquote_plus(body)))
         if self.path == "/scriptText":
             if "RemotingDiagnostics" in body:
-                self._reply(200, b"PROBE rootUsable=3000000000 rootFree=9000000000 tmpUsable=3000000000 tmpFree=9000000000\n", "text/plain")
+                self._reply(200, b"PROBE rootUsable=3000000000 rootFree=9000000000 rootTotal=500000000000 tmpUsable=3000000000 tmpFree=9000000000 tmpTotal=500000000000\n", "text/plain")
             elif "deleteRecursive" in body:
                 self._reply(200, b"RESULT deleted=2 skipped=0 errors=0\n", "text/plain")
             else:
@@ -612,7 +617,7 @@ PYEOF2
     rm -f "$srv" "$log"
     return
   fi
-  for want in "POST /computer/build-agent-03/doChangeOffline?offline=false" "POST /queue/cancelItem?id=201" "POST /quietDown" "POST /scriptText"; do
+  for want in "POST /computer/build-agent-03/toggleOffline" "POST /queue/cancelItem?id=201" "POST /quietDown" "POST /scriptText"; do
     if ! grep -qF "$want" "$log"; then
       echo "FAIL: interaction — missing '$want' (see stderr)"
       FAILED=1
@@ -685,6 +690,11 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/crumbIssuer/api/json":
             self._reply(200, b'{"crumb":"action-crumb-1","crumbRequestField":"Jenkins-Crumb"}')
+        elif "/api/json" in self.path and self.path.startswith("/computer/"):
+            # node state read for the toggle flow: online here, so
+            # nodeOffline flips it (one toggle POST) and the later
+            # nodeOnline is a no-op that must not POST anything.
+            self._reply(200, b'{"offline": false, "temporarilyOffline": false}')
         else:
             self._reply(404, b'{}')
 
@@ -740,8 +750,8 @@ PYEOF
     rm -f "$action_srv" "$action_log"
     return
   fi
-  if ! printf '%s' "${a#JH-E2E-A }" | jq -e '.actionMessage == "action failed (exit 22)"' >/dev/null 2>&1; then
-    echo "FAIL: action phase — failure feedback missing: $a"
+  if ! printf '%s' "${a#JH-E2E-A }" | jq -e '(.actionMessage == "action failed (exit 22)") and (.messages[2] == "node offline") and (.messages[5] == "already online")' >/dev/null 2>&1; then
+    echo "FAIL: action phase — feedback/toggle/no-op messages wrong: $a"
     FAILED=1
     rm -f "$action_srv" "$action_log"
     return
@@ -762,7 +772,7 @@ PYEOF
     rm -f "$action_srv" "$action_log"
     return
   fi
-  for want in "POST /quietDown" "POST /queue/cancelItem?id=207" "POST /computer/build-agent-03/doChangeOffline" "POST /scriptText" "POST /cancelQuietDown"; do
+  for want in "POST /quietDown" "POST /queue/cancelItem?id=207" "POST /computer/build-agent-03/toggleOffline" "POST /scriptText" "POST /cancelQuietDown"; do
     if ! grep -qF "$want" "$action_log"; then
       echo "FAIL: action phase — missing '$want' (see stderr)"
       FAILED=1
@@ -770,8 +780,16 @@ PYEOF
       return
     fi
   done
+  # nodeOffline flipped once; the later nodeOnline on the (mock-)online
+  # node must have been a state-read no-op, not a second POST.
+  if [ "$(grep -c '^POST /computer/build-agent-03/toggleOffline' "$action_log" || true)" -ne 1 ]; then
+    echo "FAIL: action phase — toggle POST count != 1 (no-op pin, see stderr)"
+    FAILED=1
+    rm -f "$action_srv" "$action_log"
+    return
+  fi
   rm -f "$action_srv" "$action_log"
-  echo "PASS: safe actions (6 POSTs with crumbs incl. scriptText list+clean, failure feedback on 500)"
+  echo "PASS: safe actions (6 POSTs with crumbs incl. toggle flip + no-op pin, failure feedback on 500)"
 }
 
 # ---- phase 7: widget lifecycle -----------------------------------------------

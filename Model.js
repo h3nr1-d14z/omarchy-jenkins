@@ -240,15 +240,26 @@ function parseUpdateCenter(updateCenterJson) {
 // ------------------------------------------------------------- assessment
 
 // Score penalties (subtracted from 100):
-//   offline node 8   slow node 4   online disk-critical 10   backlog 8
-//   stuck item 4     red job 6     unstable>=2 4             updates 2
+//   offline node 8   slow node 4   disk-critical 10 (offline deaths keep
+//   it — a node dying with a full disk is not a refund)   backlog 8
+//   stuck item 4     red job 6     unstable>=2 4          updates 2
 //   restart required 2
-// Levels: score >= 95 "ok", >= 50 "warn", else "critical".
+// Levels: score >= 95 "ok", >= 50 "warn", else "critical" — except that
+// a third or more of the agents offline forces "critical" regardless of
+// score (fleet-capacity floor).
 function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
   var cfg = jhIsObject(config) ? config : {}
   var queueThreshold = jhNum(cfg.queueBacklogThreshold, 10)
   var diskWarnGb = jhNum(cfg.diskWarnGb, 25)
   var diskCriticalGb = jhNum(cfg.diskCriticalGb, 10)
+  // Percentage thresholds scale the floors with the volume: effective
+  // = max(absolute, pct × total). Totals exist only on probed nodes
+  // (the monitor API reports none), so monitor-only nodes keep the
+  // absolute thresholds. Defaults 10/3: a 460 GB agent warns at 46 GB
+  // and goes critical at 14 GB — hours before fixed 25/10 floors notice
+  // on big volumes, while small volumes never over-warn.
+  var diskWarnPct = jhNum(cfg.diskWarnPct, 10)
+  var diskCriticalPct = jhNum(cfg.diskCriticalPct, 3)
   var rttWarnMs = jhNum(cfg.responseTimeWarnMs, 1000)
   // Failures penalty cap (0 = uncapped). Controllers with a large job
   // catalog can carry a habitual red minority (e.g. 41 of 774 = 5%); the
@@ -319,9 +330,14 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
   var nodeOut = []
   var overallReasons = []
   var offlineNodes = 0
-  var diskCriticalOnline = 0
+  var diskCriticalCount = 0
   var slowNodes = 0
   var score = 100
+
+  // Tier of one volume against its effective thresholds.
+  function tierOf(gb, warnGb, critGb) {
+    return gb < critGb ? "critical" : gb < warnGb ? "low" : "ok"
+  }
 
   for (var n = 0; n < parsedNodes.nodes.length; n++) {
     var node = parsedNodes.nodes[n]
@@ -348,12 +364,37 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
       level = "warn"
       overallReasons.push("node " + node.displayName + " offline — " + cause)
     }
-    if (minGb !== null && minGb < diskCriticalGb) {
+    // Effective per-volume thresholds: scale with the volume when the
+    // probe supplied its total, otherwise the absolute floors.
+    var rootTotalGb = typeof node.rootTotalBytes === "number" && node.rootTotalBytes > 0
+      ? node.rootTotalBytes / 1e9 : null
+    var tmpTotalGb = typeof node.tmpTotalBytes === "number" && node.tmpTotalBytes > 0
+      ? node.tmpTotalBytes / 1e9 : null
+    var rootWarnGb = rootTotalGb !== null
+      ? Math.max(diskWarnGb, diskWarnPct / 100 * rootTotalGb) : diskWarnGb
+    var rootCritGb = rootTotalGb !== null
+      ? Math.max(diskCriticalGb, diskCriticalPct / 100 * rootTotalGb) : diskCriticalGb
+    var tmpWarnGb = tmpTotalGb !== null
+      ? Math.max(diskWarnGb, diskWarnPct / 100 * tmpTotalGb) : diskWarnGb
+    var tmpCritGb = tmpTotalGb !== null
+      ? Math.max(diskCriticalGb, diskCriticalPct / 100 * tmpTotalGb) : diskCriticalGb
+    var rootTier = diskGb !== null ? tierOf(diskGb, rootWarnGb, rootCritGb) : null
+    var tmpTier = tmpGb !== null ? tierOf(tmpGb, tmpWarnGb, tmpCritGb) : null
+    var worstTier = null
+    if (rootTier === "critical" || tmpTier === "critical") worstTier = "critical"
+    else if (rootTier === "low" || tmpTier === "low") worstTier = "low"
+    else if (rootTier !== null || tmpTier !== null) worstTier = "ok"
+    if (worstTier === "critical") {
       reasons.push("disk space critical: " + jhGbLabel(minGb) + " free")
       level = "critical"
-      if (!isOffline) diskCriticalOnline++
+      // Offline deaths KEEP the penalty: a node that went offline with a
+      // critical disk died OF that disk — trading the -10 for the cheaper
+      // -8 offline penalty refunded two points at the worst moment of the
+      // incident that motivated this (measured: 90 online vs 92 offline
+      // for the same 2.3 GB).
+      diskCriticalCount++
       overallReasons.push("node " + node.displayName + " disk space critical: " + jhGbLabel(minGb) + " free")
-    } else if (minGb !== null && minGb < diskWarnGb) {
+    } else if (worstTier === "low") {
       reasons.push("disk space low: " + jhGbLabel(minGb) + " free")
       if (level === "ok") level = "warn"
       overallReasons.push("node " + node.displayName + " disk space low: " + jhGbLabel(minGb) + " free")
@@ -367,10 +408,8 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
     // the evidence is weak and the Service toast is debounced). Offline
     // nodes keep whatever the (stale) values say, but diffEvents never
     // diffs them, so no flapping.
-    var diskTier = null
-    if (minGb !== null) {
-      diskTier = minGb < diskCriticalGb ? "critical" : (minGb < diskWarnGb ? "low" : "ok")
-    } else if (!isOffline) {
+    var diskTier = worstTier
+    if (diskTier === null && !isOffline) {
       diskTier = "unknown"
       reasons.push("disk state unknown (monitors not reporting)")
       if (level === "ok") level = "warn"
@@ -394,6 +433,8 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
       probedAt: typeof node.probedAt === "number" ? node.probedAt : null,
       rootFreeBytes: typeof node.rootFreeBytes === "number" ? node.rootFreeBytes : null,
       tmpFreeBytes: typeof node.tmpFreeBytes === "number" ? node.tmpFreeBytes : null,
+      rootTotalBytes: typeof node.rootTotalBytes === "number" ? node.rootTotalBytes : null,
+      tmpTotalBytes: typeof node.tmpTotalBytes === "number" ? node.tmpTotalBytes : null,
       responseTimeMs: node.responseTimeMs,
       executorsTotal: node.executorsTotal,
       executorsIdle: node.executorsIdle,
@@ -406,8 +447,20 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
   }
 
   if (offlineNodes > 0) score -= 8 * offlineNodes
-  if (diskCriticalOnline > 0) score -= 10 * diskCriticalOnline
+  if (diskCriticalCount > 0) score -= 10 * diskCriticalCount
   if (slowNodes > 0) score -= 4 * slowNodes
+
+  // Fleet-capacity floor: with a third or more of the agents offline the
+  // chip goes critical regardless of score. The score band would read
+  // warn at 66 with three of eight agents down — a fleet that lost a
+  // third of its executor pools is an incident even when the survivors
+  // are pristine. The floor can only worsen the band, never improve it.
+  var totalNodes = parsedNodes.nodes.length
+  var offlineFrac = totalNodes > 0 ? offlineNodes / totalNodes : 0
+  if (offlineNodes > 0 && offlineFrac >= 1 / 3) {
+    overallReasons.push(offlineNodes + " of " + totalNodes
+      + " agents offline (a third or more) — fleet capacity critical")
+  }
 
   // --- queue assessment
   var depth = jhNum(parsedQueue.depth, 0)
@@ -510,7 +563,9 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
       updatesAvailable: updatesAvailable
     },
     overall: {
-      level: score >= 95 ? "ok" : score >= 50 ? "warn" : "critical",
+      level: (offlineFrac >= 1 / 3)
+        ? "critical"
+        : score >= 95 ? "ok" : score >= 50 ? "warn" : "critical",
       score: score,
       reasons: overallReasons
     }
@@ -901,8 +956,14 @@ function buildNetrc(user, token, jenkinsUrl) {
     + "\npassword " + (token === undefined || token === null ? "" : String(token))
 }
 
-function buildCurlArgs(endpoint, method, jenkinsUrl, netrcPath, crumb) {
-  var args = ["curl", "-fsS", "--max-time", "8", "--netrc-file", netrcPath, "-H", "Accept: application/json"]
+function buildCurlArgs(endpoint, method, jenkinsUrl, netrcPath, crumb, timeoutSec) {
+  // timeoutSec defaults to 8 for the light endpoints; the catalog tree
+  // query needs far more (a cold Jenkins cache on a large controller
+  // measured 34s for the deep jobs tree, 2.7s warm — an 8s budget there
+  // turns a cold cache into a permanent "controller unreachable", since
+  // the timing-out poll never warms the cache it is waiting for).
+  var args = ["curl", "-fsS", "--max-time", String(jhNum(timeoutSec, 8)),
+    "--netrc-file", netrcPath, "-H", "Accept: application/json"]
   if (method && method !== "GET") {
     args.push("-X", method)
   }
@@ -923,10 +984,16 @@ function buildCurlArgs(endpoint, method, jenkinsUrl, netrcPath, crumb) {
 //
 // nodeWorkspaceList / nodeWorkspaceClean run fixed Groovy templates on
 // the script console (requires an admin-scoped token): the node NAME is
-// the only value ever interpolated into the script text. The clean
-// script re-checks idleness and onlineness SERVER-SIDE (Computer.isIdle
-// also covers one-off executors) so a stale panel cannot trigger a
-// delete on a busy node.
+// the only value ever interpolated into the script text. Both walk the
+// workspace tree RECURSIVELY so folder-nested jobs appear as their full
+// relative paths (a folder job's workspace dir is a directory of leaf
+// workspaces, and the old top-level-only walk showed four folders where
+// ~25 job workspaces lived). The clean script skips a leaf when its job
+// — resolved by the folder-qualified name, with @2 duplicates mapped to
+// their base job — is building ANYWHERE, so one busy executor never
+// blocks reclaiming an idle job's workspace; the residual race (a job
+// starting between check and delete) is the standard Jenkins wipe race
+// and recovers as a clean checkout.
 function buildActionCommand(action, targetId, jenkinsUrl, netrcPath, crumb) {
   var act = jhIsObject(action) ? action : { action: String(action || ""), targetId: targetId }
   var kind = String(act.action || "")
@@ -939,12 +1006,18 @@ function buildActionCommand(action, targetId, jenkinsUrl, netrcPath, crumb) {
     endpoint = "/quietDown"
   } else if (kind === "cancelQuietDown") {
     endpoint = "/cancelQuietDown"
-  } else if (kind === "nodeOffline") {
-    endpoint = "/computer/" + encodeURIComponent(id) + "/doChangeOffline?offline=true&offlineMessage=jenkins-health"
+  } else if (kind === "nodeOffline" || kind === "nodeOnline") {
+    // doChangeOffline is gone from current Jenkins (404 on 2.568.2 —
+    // both panel toggles silently did nothing), and the surviving
+    // toggleOffline is a STATE FLIP: POSTing it blind on a node that
+    // recovered on its own takes it back down (verified the hard way).
+    // So this command is a state READ; the Service parses it and only
+    // POSTs the toggle when the node is not already in the wanted state
+    // — a second click on a satisfied state is a no-op.
+    return buildCurlArgs("/computer/" + encodeURIComponent(id)
+      + "/api/json?tree=offline%2CtemporarilyOffline", "GET", jenkinsUrl, netrcPath, null)
   } else if (kind === "nodeDiskProbe") {
     return buildScriptCommand(diskProbeScript(id), jenkinsUrl, netrcPath, crumb)
-  } else if (kind === "nodeOnline") {
-    endpoint = "/computer/" + encodeURIComponent(id) + "/doChangeOffline?offline=false"
   } else if (kind === "nodeWorkspaceList" || kind === "nodeWorkspaceClean") {
     var script = kind === "nodeWorkspaceList"
       ? workspaceListScript(id) : workspaceCleanScript(id)
@@ -974,8 +1047,26 @@ function workspaceListScript(nodeName) {
     "def ws = c.node != null ? c.node.rootPath : null",
     "if (ws != null) { ws = ws.child('workspace') }",
     "if (ws == null) { println('NO_WORKSPACE_ROOT'); return }",
+    // Recursive walk: folder jobs' workspaces are directories of leaf
+    // job workspaces, so a directory whose relative path resolves to a
+    // non-Job item (a folder) is descended into; everything else is a
+    // leaf (a job workspace or an orphan from a deleted job). @2
+    // duplicates resolve to null and are listed as the leaves they are.
     "def n = 0",
-    "ws.list().findAll { it.isDirectory() }.each { println('DIR ' + it.name); n++ }",
+    "def walk",
+    "walk = { d, prefix ->",
+    "  d.list().findAll { it.isDirectory() }.each { e ->",
+    "    def rel = prefix.isEmpty() ? e.name : prefix + '/' + e.name",
+    "    def item = null",
+    "    try { item = Jenkins.instance.getItemByFullName(rel) } catch (x) { item = null }",
+    "    if (item != null && !(item instanceof hudson.model.Job)) {",
+    "      walk(e, rel)",
+    "    } else {",
+    "      println('DIR ' + rel); n++",
+    "    }",
+    "  }",
+    "}",
+    "try { walk(ws, '') } catch (err) { println('WALK_FAILED ' + err.message) }",
     "println('LISTED ' + n)"
   ].join("\n")
 }
@@ -985,22 +1076,40 @@ function workspaceCleanScript(nodeName) {
     "def c = Jenkins.instance.getComputer(" + jhGroovyString(nodeName) + ")",
     "if (c == null) { c = Jenkins.instance.computers.toList().find { it.displayName == " + jhGroovyString(nodeName) + " } }",
     "if (c == null) { println('NO_SUCH_COMPUTER'); return }",
-    "if (!c.online) { println('NODE_OFFLINE'); return }",
-    "if (!c.idle) { println('NODE_BUSY'); return }",
     "def ws = c.node != null ? c.node.rootPath : null",
     "if (ws != null) { ws = ws.child('workspace') }",
     "if (ws == null) { println('NO_WORKSPACE_ROOT'); return }",
+    // No whole-node gates: a monitor-disconnected agent keeps its channel
+    // (that is exactly when cleanup is needed), and a hard-dead channel
+    // fails the walk visibly. Per-job building checks below carry the
+    // safety instead of a coarse node-idle gate.
     "def deleted = 0; def skipped = 0; def errors = 0",
-    "ws.list().findAll { it.isDirectory() }.each { d ->",
-    "  def building = false",
+    // A leaf is skipped when its job is building anywhere — resolved by
+    // the folder-qualified relative path; an @2 duplicate maps to its
+    // base job, which is the copy a concurrent build would reuse.
+    "def isBuilding = { rel ->",
+    "  def base = rel.endsWith('@2') ? rel.substring(0, rel.length() - 2) : rel",
     "  try {",
-    "    def item = Jenkins.instance.getItemByFullName(d.name)",
-    "    if (item != null) { building = item.isBuilding() }",
-    "  } catch (e) { building = false }",
-    "  if (building) { skipped++ } else {",
-    "    try { d.deleteRecursive(); deleted++ } catch (e) { errors++ }",
+    "    def item = Jenkins.instance.getItemByFullName(base)",
+    "    return item != null && item.isBuilding()",
+    "  } catch (x) { return false }",
+    "}",
+    "def walk",
+    "walk = { d, prefix ->",
+    "  d.list().findAll { it.isDirectory() }.each { e ->",
+    "    def rel = prefix.isEmpty() ? e.name : prefix + '/' + e.name",
+    "    def item = null",
+    "    try { item = Jenkins.instance.getItemByFullName(rel) } catch (x) { item = null }",
+    "    if (item != null && !(item instanceof hudson.model.Job)) {",
+    "      walk(e, rel)",
+    "    } else if (isBuilding(rel)) {",
+    "      skipped++",
+    "    } else {",
+    "      try { e.deleteRecursive(); deleted++ } catch (err) { errors++ }",
+    "    }",
     "  }",
     "}",
+    "try { walk(ws, '') } catch (err) { println('WALK_FAILED ' + err.message) }",
     "println('RESULT deleted=' + deleted + ' skipped=' + skipped + ' errors=' + errors)"
   ].join("\n")
 }
@@ -1033,15 +1142,15 @@ function diskProbeScript(nodeName) {
     // is escaped by jhGroovyString). The exchange is KEYED (name=value
     // pairs, extracted by regex below) so a prefix like RemotingDiagnostics'
     // "Result:" or stray output can never misalign the fields.
-    "def probe = \"def r = new File(${root.getRemote().inspect()}); def t = new File(System.getProperty('java.io.tmpdir')); 'rootUsable=' + r.usableSpace + ' rootFree=' + r.freeSpace + ' tmpUsable=' + t.usableSpace + ' tmpFree=' + t.freeSpace\"",
+    "def probe = \"def r = new File(${root.getRemote().inspect()}); def t = new File(System.getProperty('java.io.tmpdir')); 'rootUsable=' + r.usableSpace + ' rootFree=' + r.freeSpace + ' rootTotal=' + r.totalSpace + ' tmpUsable=' + t.usableSpace + ' tmpFree=' + t.freeSpace + ' tmpTotal=' + t.totalSpace\"",
     "def res = c.channel != null ? hudson.util.RemotingDiagnostics.executeGroovy(probe.toString(), c.channel) : null",
     // Built-in node without a channel: its root IS controller-local.
     "if (res == null) {",
     "  def r0 = new File(root.getRemote())",
     "  def t0 = new File(System.getProperty('java.io.tmpdir'))",
-    "  res = 'rootUsable=' + r0.usableSpace + ' rootFree=' + r0.freeSpace + ' tmpUsable=' + t0.usableSpace + ' tmpFree=' + t0.freeSpace",
+    "  res = 'rootUsable=' + r0.usableSpace + ' rootFree=' + r0.freeSpace + ' rootTotal=' + r0.totalSpace + ' tmpUsable=' + t0.usableSpace + ' tmpFree=' + t0.freeSpace + ' tmpTotal=' + t0.totalSpace",
     "}",
-    "def m = res =~ /rootUsable=(\\d+) rootFree=(\\d+) tmpUsable=(\\d+) tmpFree=(\\d+)/",
+    "def m = res =~ /rootUsable=(\\d+) rootFree=(\\d+) rootTotal=(\\d+) tmpUsable=(\\d+) tmpFree=(\\d+) tmpTotal=(\\d+)/",
     "if (m.find()) { println('PROBE ' + m.group(0)) } else { println('NO_PROBE_RESULT') }"
   ].join("\n")
 }
@@ -1057,7 +1166,7 @@ function parseDiskProbe(exitCode, body) {
       error: denied ? "no script-console permission — the token must be admin-scoped"
         : "probe failed (exit " + exitCode + ")" }
   }
-  var m = text.match(/PROBE rootUsable=(\d+) rootFree=(\d+) tmpUsable=(\d+) tmpFree=(\d+)/)
+  var m = text.match(/PROBE rootUsable=(\d+) rootFree=(\d+) rootTotal=(\d+) tmpUsable=(\d+) tmpFree=(\d+) tmpTotal=(\d+)/)
   if (!m) {
     var verdicts = ["NO_SUCH_COMPUTER", "NODE_OFFLINE", "NO_WORKSPACE_ROOT", "NO_PROBE_RESULT"]
     var found = ""
@@ -1071,8 +1180,10 @@ function parseDiskProbe(exitCode, body) {
     ok: true, denied: false,
     rootUsable: parseInt(m[1], 10),
     rootFree: parseInt(m[2], 10),
-    tmpUsable: parseInt(m[3], 10),
-    tmpFree: parseInt(m[4], 10)
+    rootTotal: parseInt(m[3], 10),
+    tmpUsable: parseInt(m[4], 10),
+    tmpFree: parseInt(m[5], 10),
+    tmpTotal: parseInt(m[6], 10)
   }
 }
 
@@ -1104,6 +1215,8 @@ function mergeProbeData(nodesParsed, probeData, nowMs, freshMs) {
       node.probedAt = probedAt
       node.rootFreeBytes = typeof p.rootFreeBytes === "number" ? p.rootFreeBytes : null
       node.tmpFreeBytes = typeof p.tmpFreeBytes === "number" ? p.tmpFreeBytes : null
+      node.rootTotalBytes = typeof p.rootTotalBytes === "number" ? p.rootTotalBytes : null
+      node.tmpTotalBytes = typeof p.tmpTotalBytes === "number" ? p.tmpTotalBytes : null
       merged.push(node.displayName)
     }
   }

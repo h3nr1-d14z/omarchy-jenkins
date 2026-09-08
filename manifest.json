@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "h3nr1.d14z.jenkins",
   "name": "Jenkins Health",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "author": "H3nr1 D14z",
   "license": "MIT",
-  "description": "Jenkins controller health in the Omarchy bar: live polling of controller, nodes (workspace and /tmp disk), queue, jobs, and plugin updates; notifications for controller outages, node state and disk changes, job failures, queue backlogs, and maintenance; opt-in live disk probing of agents (usable space, straight from the node); safe actions (quiet-down toggle, cancel queue item, node online/offline) plus an opt-in per-node workspace wipe (admin token, server-side idle re-check).",
+  "description": "Jenkins controller health in the Omarchy bar: live polling of controller, nodes (workspace and /tmp disk), queue, jobs, and plugin updates; notifications for controller outages, node state and disk changes, job failures, queue backlogs, and maintenance; opt-in live disk probing of agents (usable space and volume totals, straight from the node) with percentage-of-volume thresholds; the chip goes critical when a third or more of the agents are down; safe actions (quiet-down toggle, cancel queue item, node online/offline with state re-read) plus an opt-in per-node workspace wipe (admin token, per-job building checks).",
   "kinds": [
     "service",
     "bar-widget"
@@ -82,7 +82,7 @@
         "min": 1,
         "max": 2000,
         "defaultValue": 25,
-        "description": "Node free disk space below this warns."
+        "description": "Absolute floor: node free disk below this warns. On probed nodes the effective threshold is max(absolute, diskWarnPct x volume size)."
       },
       {
         "key": "diskCriticalGb",
@@ -91,7 +91,25 @@
         "min": 0,
         "max": 2000,
         "defaultValue": 10,
-        "description": "Node free disk space below this is critical."
+        "description": "Absolute floor: node free disk below this is critical. On probed nodes the effective threshold is max(absolute, diskCriticalPct x volume size)."
+      },
+      {
+        "key": "diskWarnPct",
+        "type": "integer",
+        "label": "Disk warn (% of volume)",
+        "min": 0,
+        "max": 100,
+        "defaultValue": 10,
+        "description": "Percentage-of-volume warn threshold for probed nodes: warns below max(diskWarnGb, this % of the volume total). 0 disables the percentage and keeps the absolute GB only. Monitor-only (unprobed) nodes always use the absolute thresholds."
+      },
+      {
+        "key": "diskCriticalPct",
+        "type": "integer",
+        "label": "Disk critical (% of volume)",
+        "min": 0,
+        "max": 100,
+        "defaultValue": 3,
+        "description": "Percentage-of-volume critical threshold for probed nodes: critical below max(diskCriticalGb, this % of the volume total). 0 disables the percentage and keeps the absolute GB only."
       },
       {
         "key": "responseTimeWarnMs",
@@ -177,7 +195,7 @@
           "On"
         ],
         "defaultValue": "Off",
-        "description": "Off by default. When On, nodes get a Clean ws button: list the workspace directories under the node's default root, then confirm-delete the non-building ones via the Jenkins script console. Requires an admin-scoped API token; the delete re-checks node idleness server-side."
+        "description": "Off by default. When On, nodes get a Clean ws button: it lists the job workspaces under the node's workspace root (folders walked recursively) and confirm-deletes the non-building ones via the Jenkins script console. Requires an admin-scoped API token; a job that is building anywhere is skipped, so one busy executor never blocks reclaiming an idle job's workspace. Works on monitor-disconnected agents with a live channel."
       },
       {
         "key": "enableDiskProbe",

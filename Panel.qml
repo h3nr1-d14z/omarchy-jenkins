@@ -608,7 +608,7 @@ Item {
 
               Button {
                 id: nodeClean
-                visible: root.cleanWorkspaceEnabled && modelData.state === "online"
+                visible: root.cleanWorkspaceEnabled
                 width: visible ? implicitWidth : 0
                 anchors.right: nodeAction.left
                 anchors.rightMargin: Style.space(4)

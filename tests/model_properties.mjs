@@ -174,9 +174,13 @@ function snapshotInvariants(snap, cfg, ctx) {
   ok(Number.isFinite(snap.overall.score) && snap.overall.score >= 0 && snap.overall.score <= 100,
     'I1 score in [0,100]', ctx + ' score=' + snap.overall.score);
 
-  // I2 level ↔ score thresholds
-  const expected = snap.overall.score >= 95 ? 'ok' : snap.overall.score >= 50 ? 'warn' : 'critical';
-  ok(snap.overall.level === expected, 'I2 level matches score', ctx + ' level=' + snap.overall.level + ' score=' + snap.overall.score);
+  // I2 level ↔ score thresholds, with the v0.5.0 fleet floor: a third
+  // or more of the agents offline forces critical regardless of score.
+  let expected = snap.overall.score >= 95 ? 'ok' : snap.overall.score >= 50 ? 'warn' : 'critical';
+  const nds = Array.isArray(snap.nodes) ? snap.nodes : [];
+  const down = nds.filter((x) => x && x.state === 'offline').length;
+  if (nds.length > 0 && down / nds.length >= 1 / 3) expected = 'critical';
+  ok(snap.overall.level === expected, 'I2 level matches score/floor', ctx + ' level=' + snap.overall.level + ' score=' + snap.overall.score);
 
   // I3 outage shape
   if (snap.controller.status === 'unreachable') {
@@ -347,12 +351,23 @@ for (let iter = 0; iter < N; iter++) {
   ok(!urlArg.includes('//jenkins') || urlArg.includes('://'), 'I13 no double slash', ctx + ' ' + urlArg);
   ok(urlArg.startsWith('https://') && urlArg.endsWith('/api/json'), 'I13 url join', ctx + ' ' + urlArg);
   ok(args.some((a) => String(a).includes('Jenkins-Crumb')) === (crumb !== null), 'I13 crumb presence', ctx);
+  const slowArgs = Model.buildCurlArgs('/api/json?tree=x', 'GET', url, '/tmp/n', null, 45);
+  ok(hasPair(slowArgs, '--max-time', '45'),
+    'I13 timeout override reaches --max-time (cold-cache tree budget)', ctx);
 
   const action = pick(['cancelQueueItem', 'quietDown', 'cancelQuietDown', 'nodeOffline', 'nodeOnline',
     'nodeWorkspaceList', 'nodeWorkspaceClean', 'bogusAction']);
   const cmd = Model.buildActionCommand({ action, targetId: '42' }, null, url, '/tmp/n', crumb);
   if (action === 'bogusAction') {
     ok(Array.isArray(cmd) && cmd.length === 0, 'I14 unknown action → empty', ctx);
+  } else if (action === 'nodeOffline' || action === 'nodeOnline') {
+    // v0.5.0: the toggles READ state first; only the Service decides
+    // whether to POST the flip (toggleOffline is a blind flip, so a
+    // satisfied state must never be POSTed at).
+    ok(Array.isArray(cmd) && cmd[0] === 'curl' && !hasPair(cmd, '-X', 'POST'),
+      'I14 toggle reads state (GET, no -X POST)', ctx);
+    ok(cmd[cmd.length - 1].endsWith('/computer/42/api/json?tree=offline%2CtemporarilyOffline'),
+      'I14 toggle state url', ctx);
   } else {
     ok(Array.isArray(cmd) && cmd[0] === 'curl' && hasPair(cmd, '-X', 'POST'), 'I14 action POST', ctx);
     ok(cmd[cmd.length - 1].startsWith('https://'), 'I14 action url', ctx);
@@ -691,10 +706,12 @@ for (let iter = 0; iter < 300; iter++) {
   const snapOk = snapOf(mk(60, 50));
   ok(snapOk.overall.score - snapTmp.overall.score === 10,
     'D10 online tmp-critical node penalized 10', '');
-  // offline critical node does not (offline exclusion preserved)
+  // offline critical node KEEPS the disk penalty (v0.5.0: a node dying
+  // with a full disk is not a refund — the death is the disk; the old
+  // −8-for-−10 swap made the score RISE as the third agent died)
   const snapOff = snapOf(mk(5, 50, true));
-  ok(snapOff.nodes[0].state === 'offline' && snapOff.overall.score === snapOk.overall.score - 8,
-    'D11 offline node pays only the offline penalty', '');
+  ok(snapOff.nodes[0].state === 'offline' && snapOff.overall.score === snapOk.overall.score - 18,
+    'D11 offline node pays offline + retained disk-critical penalties', '');
 
   // one-off executors count toward busy without breaking utilization
   const withOneOff = structuredClone(mk(60, 50));
@@ -718,9 +735,19 @@ for (let iter = 0; iter < 300; iter++) {
     && Model.workspaceCleanScript('Built-In Node').includes("displayName == 'Built-In Node'"),
     'D16 templates resolve computers by displayName fallback', '');
   const cleanScript = Model.workspaceCleanScript('dnode');
-  ok(cleanScript.includes('NODE_BUSY') && cleanScript.includes('!c.idle'),
-    'D14 clean script guards idleness server-side', '');
-  ok(cleanScript.includes('deleteRecursive') && cleanScript.includes('isBuilding'),
+  // v0.5.0: per-job checks replace the coarse node-idle gate. A leaf is
+  // skipped when its job — folder-qualified, @2 duplicates mapped to the
+  // base job — is building anywhere; the walk recurses into folders.
+  ok(!cleanScript.includes('NODE_BUSY') && !cleanScript.includes('!c.idle')
+    && !cleanScript.includes('NODE_OFFLINE'),
+    'D14 clean script has no whole-node gates', '');
+  ok(cleanScript.includes('getItemByFullName(base)') && cleanScript.includes('isBuilding(rel)'),
+    'D14 clean script skips building jobs per leaf', '');
+  ok(cleanScript.includes("instanceof hudson.model.Job") && cleanScript.includes('walk(e, rel)'),
+    'D14 clean script walks folders recursively to job workspaces', '');
+  ok(cleanScript.includes("rel.endsWith('@2')"),
+    'D14 @2 duplicates map to their base job for the building check', '');
+  ok(cleanScript.includes('deleteRecursive'),
     'D14 clean script deletes non-building dirs only', '');
   const scriptCmd = Model.buildScriptCommand(cleanScript, 'https://ci.example.com/', '/tmp/n', 'cr');
   ok(scriptCmd[0] === 'curl' && hasPair(scriptCmd, '--data-urlencode', 'script=' + cleanScript),
@@ -733,16 +760,17 @@ for (let iter = 0; iter < 300; iter++) {
 }
 
 // ------------------------------------------------- live disk probe (P*)
-// The probe answers one line with four byte counts (usable before free
+// The probe answers one line with six byte counts (usable, free, total
 // for root and tmp). mergeProbeData overlays measured usable space on
 // the lazily-sampled monitor values while fresh, never on offline nodes,
 // and age-outs revert to monitor values only by timestamp.
 {
   const P = 'node-p';
-  const line = 'PROBE rootUsable=0 rootFree=10467270656 tmpUsable=0 tmpFree=10467270656';
+  const line = 'PROBE rootUsable=0 rootFree=10467270656 rootTotal=503232708608 tmpUsable=0 tmpFree=10467270656 tmpTotal=503232708608';
   const pr = Model.parseDiskProbe(0, line + '\n');
   ok(pr.ok === true && pr.rootUsable === 0 && pr.tmpUsable === 0
-    && pr.rootFree === 10467270656, 'P1 probe line parses all four counts', '');
+    && pr.rootFree === 10467270656 && pr.rootTotal === 503232708608,
+    'P1 probe line parses all six counts (usable, free, total)', '');
   const pv = Model.parseDiskProbe(0, 'NODE_OFFLINE\n');
   ok(pv.ok === false && pv.error === 'NODE_OFFLINE', 'P1 offline verdict parses', '');
   const pd = Model.parseDiskProbe(22, '403 administer');
@@ -810,7 +838,7 @@ for (let iter = 0; iter < 300; iter++) {
 // unit literals keep passing. Also pin probedNames, the coverage set the
 // Service re-baselines on.
 {
-  const KEYS = ['rootUsable', 'rootFree', 'tmpUsable', 'tmpFree'];
+  const KEYS = ['rootUsable', 'rootFree', 'rootTotal', 'tmpUsable', 'tmpFree', 'tmpTotal'];
   const script = Model.diskProbeScript('rt-node');
   const emitOrder = KEYS.every(k => script.includes(k + "='"))
     && script.includes("println('PROBE ' + m.group(0))");
@@ -841,6 +869,66 @@ for (let iter = 0; iter < 300; iter++) {
   const none = Model.mergeProbeData(nodes(), null, now, 900_000);
   ok(Array.isArray(none.probedNames) && none.probedNames.length === 0,
     'P5 probedNames is empty with no probe data', '');
+}
+
+// P6: v0.5.0 semantics — offline deaths keep the disk penalty (no
+// refund), percentage thresholds ride the probed totals, the offline
+// fraction floors the level, and the node toggles read state first.
+{
+  const ctrl = Model.parseController({ mode: 'NORMAL' }, '2.568.2');
+  const cfg = { diskWarnGb: 25, diskCriticalGb: 10, notifyNodes: true };
+  const nodeOf = (name, offline, diskGb) => ({
+    displayName: name, offline, temporarilyOffline: offline,
+    monitorData: {
+      'hudson.node_monitors.DiskSpaceMonitor': { size: diskGb * 1e9 },
+      'hudson.node_monitors.TemporarySpaceMonitor': { size: diskGb * 1e9 },
+    },
+  });
+  const assessNodes = (nodes) => Model.assess(ctrl, Model.parseNodes({ computer: nodes }),
+    null, null, null, cfg, 12345);
+
+  // Inversion: same critical disk, offline flag differs. The offline
+  // penalty (8) replaces nothing — the disk penalty (10) is retained.
+  const on = assessNodes([nodeOf('sv', false, 2.3)]);
+  const off = assessNodes([nodeOf('sv', true, 2.3)]);
+  ok(off.overall.score < on.overall.score,
+    'P6 offline death keeps the disk-critical penalty (no 2-point refund)', '');
+  ok(off.overall.score === on.overall.score - 8,
+    'P6 offline-with-critical-disk = online score minus the 8pt offline penalty only', '');
+
+  // Percentage thresholds: effective = max(absolute, pct × total), and
+  // they only apply to probed nodes (totals arrive via the merge).
+  const mergedTier = (usableGb, totalGb) => {
+    const p = Model.parseNodes({ computer: [nodeOf('n', false, 999)] });
+    Model.mergeProbeData(p, { n: { diskBytes: usableGb * 1e9, tempBytes: usableGb * 1e9,
+      probedAt: 12300, rootTotalBytes: totalGb * 1e9, tmpTotalBytes: totalGb * 1e9 } },
+      12345, 900_000);
+    return Model.assess(ctrl, p, null, null, null, cfg, 12345).nodes[0].diskTier;
+  };
+  ok(mergedTier(30, 400) === 'low' && assessNodes([nodeOf('n', false, 30)]).nodes[0].diskTier === 'ok',
+    'P6 30 GB on a 400 GB volume: low with probed totals, ok on absolutes alone', '');
+  ok(mergedTier(11, 400) === 'critical' && assessNodes([nodeOf('n', false, 11)]).nodes[0].diskTier === 'low',
+    'P6 11 GB on a 400 GB volume: critical with probed totals, low on absolutes alone', '');
+
+  // Offline fraction floor: a third or more down forces critical.
+  const fleet = (down) => assessNodes([
+    nodeOf('a', down > 0, 100), nodeOf('b', down > 1, 100), nodeOf('c', false, 100),
+    nodeOf('d', false, 100), nodeOf('e', false, 100)]);
+  ok(fleet(2).overall.level === 'critical',
+    'P6 two of five agents offline forces critical regardless of score', '');
+  ok(fleet(1).overall.level === 'warn',
+    'P6 one of five agents offline leaves the score band in charge', '');
+
+  // Node toggles: state read, never the removed doChangeOffline route.
+  const cmd = JSON.stringify(
+    Model.buildActionCommand({ action: 'nodeOnline', targetId: 'sv-1' }, null, 'https://x', '/tmp/n', 'C'));
+  const cmdOff = JSON.stringify(
+    Model.buildActionCommand('nodeOffline', 'sv-1', 'https://x', '/tmp/n', 'C'));
+  ok(cmd.includes('/computer/sv-1/api/json?tree=offline%2CtemporarilyOffline')
+    && cmdOff.includes('/computer/sv-1/api/json?tree=offline%2CtemporarilyOffline'),
+    'P6 nodeOnline/nodeOffline read state via /computer/<id>/api/json', '');
+  ok(!cmd.includes('doChangeOffline') && !cmdOff.includes('doChangeOffline'),
+    'P6 no dead doChangeOffline route in any toggle command', '');
 }
 
 // ------------------------------------------------------------------- summary

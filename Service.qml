@@ -121,6 +121,8 @@ Item {
     property var workspacePreview: null
     property string lastActionKind: ""
     property string lastActionTarget: ""
+    property string lastCrumb: ""
+    property bool toggleStep: false
     property var diskUnknownStreak: ({})
     property var diskUnknownAnnounced: ({})
     property var diskProbes: ({})
@@ -151,7 +153,12 @@ Item {
       // the Activity feed and the never-green detection.
       // Brackets are percent-encoded: curl treats literal [] in a URL as
       // glob ranges (exit 3) unless --globoff; Jenkins accepts %5B/%5D.
-      { endpoint: "/api/json?tree=jobs%5Bname,color,healthReport%5Bscore,description%5D,lastBuild%5Bnumber,timestamp,duration,result,building%5D,lastSuccessfulBuild%5Bnumber,timestamp,duration%5D,jobs%5Bname,color,healthReport%5Bscore,description%5D,lastBuild%5Bnumber,timestamp,duration,result,building%5D,lastSuccessfulBuild%5Bnumber,timestamp,duration%5D,jobs%5Bname,color,healthReport%5Bscore,description%5D,lastBuild%5Bnumber,timestamp,duration,result,building%5D,lastSuccessfulBuild%5Bnumber,timestamp,duration%5D%5D%5D%5D,mode,quietingDown,useCrumbs,useSecurity,numExecutors", key: "api" },
+      { endpoint: "/api/json?tree=jobs%5Bname,color,healthReport%5Bscore,description%5D,lastBuild%5Bnumber,timestamp,duration,result,building%5D,lastSuccessfulBuild%5Bnumber,timestamp,duration%5D,jobs%5Bname,color,healthReport%5Bscore,description%5D,lastBuild%5Bnumber,timestamp,duration,result,building%5D,lastSuccessfulBuild%5Bnumber,timestamp,duration%5D,jobs%5Bname,color,healthReport%5Bscore,description%5D,lastBuild%5Bnumber,timestamp,duration,result,building%5D,lastSuccessfulBuild%5Bnumber,timestamp,duration%5D%5D%5D%5D,mode,quietingDown,useCrumbs,useSecurity,numExecutors", key: "api", timeoutSec: 45 },
+      // timeoutSec 45: the tree walks the whole catalog server-side and a
+      // cold Jenkins cache can take >30s on a large controller (measured
+      // 34s cold / 2.7s warm live); the default 8s turned a cold cache
+      // into a permanent "unreachable" because the timing-out poll never
+      // warmed the cache it was waiting for.
       { endpoint: "/computer/api/json", key: "computer" },
       { endpoint: "/queue/api/json", key: "queue" },
       { endpoint: "/pluginManager/api/json", key: "plugins" },
@@ -312,7 +319,7 @@ Item {
         return
       }
       var step = steps[stepIndex]
-      var args = Model.buildCurlArgs(step.endpoint, "GET", jenkinsUrl, netrcPath, null)
+      var args = Model.buildCurlArgs(step.endpoint, "GET", jenkinsUrl, netrcPath, null, step.timeoutSec)
       args.push("-D", "-") // response headers on stdout: X-Jenkins version
       fetchProcess.command = args
       fetchProcess.running = true
@@ -522,8 +529,10 @@ Item {
 
     // ---- live disk probe state -----------------------------------------
     // diskProbes[name] = { diskBytes, tempBytes, probedAt, rootFreeBytes,
-    // tmpFreeBytes, error? } — usable-space numbers measured on the
-    // node's own JVM, merged over the lazily-sampled monitor values in
+    // tmpFreeBytes, rootTotalBytes, tmpTotalBytes, error? } — usable-
+    // space numbers (and volume totals, which drive the percentage
+    // thresholds) measured on the node's own JVM, merged over the
+    // lazily-sampled monitor values in
     function applyDiskProbe(name, probe) {
       if (!name) return "disk probe failed: no node"
       var next = {}
@@ -535,6 +544,8 @@ Item {
           tempBytes: probe.tmpUsable,
           rootFreeBytes: probe.rootFree,
           tmpFreeBytes: probe.tmpFree,
+          rootTotalBytes: probe.rootTotal,
+          tmpTotalBytes: probe.tmpTotal,
           probedAt: Date.now(),
           error: ""
         }
@@ -654,6 +665,10 @@ Item {
           crumb = ""
         }
       }
+      // Kept for the offline-toggle flow: the state read that precedes
+      // the toggle is a crumb-less GET, so the POST reuses this crumb.
+      lastCrumb = crumb
+      toggleStep = false
       var act = pendingAction
       pendingAction = null
       if (!act) {
@@ -675,6 +690,46 @@ Item {
       } else if (lastActionKind === "nodeWorkspaceClean") {
         actionMessage = parseWorkspaceClean(exitCode, scriptBody(text))
         workspacePreview = null
+      } else if (lastActionKind === "nodeOnline" || lastActionKind === "nodeOffline") {
+        if (toggleStep) {
+          // The toggle POST finished.
+          toggleStep = false
+          actionMessage = exitCode === 0
+            ? (lastActionKind === "nodeOnline" ? "node online" : "node offline")
+            : "toggle failed (exit " + exitCode + ")"
+        } else {
+          // The state read finished: only POST the flip when the node is
+          // not already in the wanted state — toggleOffline is a blind
+          // flip, so a satisfied state must be a no-op (posting anyway
+          // would take a recovered node back down).
+          var st = null
+          if (exitCode === 0) {
+            try {
+              var sd = JSON.parse(String(text || ""))
+              if (sd && (typeof sd.offline === "boolean"
+                  || typeof sd.temporarilyOffline === "boolean")) {
+                st = !!(sd.offline || sd.temporarilyOffline)
+              }
+            } catch (e) {
+              st = null
+            }
+          }
+          if (st === null) {
+            actionMessage = "action failed (exit " + exitCode + ")"
+          } else {
+            var wantOffline = lastActionKind === "nodeOffline"
+            if (st === wantOffline) {
+              actionMessage = wantOffline ? "already offline" : "already online"
+            } else {
+              toggleStep = true
+              actionProcess.command = Model.buildCurlArgs(
+                "/computer/" + encodeURIComponent(lastActionTarget) + "/toggleOffline",
+                "POST", jenkinsUrl, netrcPath, lastCrumb)
+              actionProcess.running = true
+              return
+            }
+          }
+        }
       } else {
         actionMessage = exitCode === 0
           ? "action sent"
@@ -703,10 +758,12 @@ Item {
           error: denied ? "no script-console permission — the token must be admin-scoped" : "request failed" }
       }
       var lines = body.split("\n")
-      var verdicts = ["NO_SUCH_COMPUTER", "NODE_OFFLINE", "NODE_BUSY", "NO_WORKSPACE_ROOT"]
+      var verdicts = ["NO_SUCH_COMPUTER", "NO_WORKSPACE_ROOT", "WALK_FAILED"]
       var first = String(lines[0] || "").trim()
-      if (verdicts.indexOf(first) !== -1) {
-        return { node: node, dirs: [], error: first }
+      for (var v = 0; v < verdicts.length; v++) {
+        if (first === verdicts[v] || first.indexOf(verdicts[v] + " ") === 0) {
+          return { node: node, dirs: [], error: first }
+        }
       }
       var dirs = []
       for (var i = 0; i < lines.length; i++) {
@@ -726,12 +783,13 @@ Item {
       var lines = body.split("\n")
       var verdicts = {
         "NO_SUCH_COMPUTER": "node not found — nothing deleted",
-        "NODE_OFFLINE": "node offline — nothing deleted",
-        "NODE_BUSY": "node busy — nothing deleted",
-        "NO_WORKSPACE_ROOT": "no workspace root — nothing deleted"
+        "NO_WORKSPACE_ROOT": "no workspace root — nothing deleted",
+        "WALK_FAILED": "workspace walk failed — agent channel not reachable"
       }
       var first = String(lines[0] || "").trim()
-      if (verdicts[first]) return verdicts[first]
+      for (var vk in verdicts) {
+        if (first === vk || first.indexOf(vk + " ") === 0) return verdicts[vk]
+      }
       for (var i = 0; i < lines.length; i++) {
         var line = String(lines[i] || "")
         if (line.indexOf("RESULT ") === 0) {

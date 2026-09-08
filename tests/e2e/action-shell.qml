@@ -25,9 +25,13 @@ ShellRoot {
 
   property var actionList: []
   property int actionIndex: 0
+  // Feedback of each action in firing order: captured at the tick before
+  // the next action runs (chains take ~0.3s locally, ticks 600ms), plus
+  // the final one at dump time.
+  property var messages: []
 
   Component.onCompleted: {
-    var raw = String(Quickshell.env("JH_E2E_ACTIONS") || "quietDown,cancelQueueItem:207,nodeOffline:build-agent-03,nodeWorkspaceList:build-agent-03,nodeWorkspaceClean:build-agent-03,cancelQuietDown")
+    var raw = String(Quickshell.env("JH_E2E_ACTIONS") || "quietDown,cancelQueueItem:207,nodeOffline:build-agent-03,nodeWorkspaceList:build-agent-03,nodeWorkspaceClean:build-agent-03,nodeOnline:build-agent-03,cancelQuietDown")
     var list = []
     var parts = raw.split(",")
     for (var i = 0; i < parts.length; i++) {
@@ -77,6 +81,8 @@ ShellRoot {
         stop()
         return
       }
+      // The message still showing belongs to the previous action.
+      messages.push(service.actionMessage)
       var item = actionList[actionIndex]
       actionIndex += 1
       service.runAction(item.action, item.targetId)
@@ -84,15 +90,18 @@ ShellRoot {
   }
 
   Timer {
-    // 6 actions fire at 2.0s then every 0.6s (last at 5.0s); each chain
-    // (crumb + POST) takes ~0.1s locally, so the last action's feedback —
-    // success or failure — is stable well before this dump.
+    // 7 actions fire at 2.0s then every 0.6s (last at 5.6s); each chain
+    // (crumb + state read + POST for the toggles) takes ~0.3s locally,
+    // so the last action's feedback — success or failure — is stable
+    // well before this dump. messages[i] is action i's feedback.
     interval: 7200
     running: true
     repeat: false
     onTriggered: {
+      messages.push(service.actionMessage)
       console.log("JH-E2E-A " + JSON.stringify({
         actionMessage: service.actionMessage,
+        messages: messages,
         state: service.state,
         workspacePreview: service.workspacePreview
       }))

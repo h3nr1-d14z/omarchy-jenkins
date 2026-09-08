@@ -64,6 +64,8 @@ ShellRoot {
       queueBacklogThreshold: 10,
       diskWarnGb: 25,
       diskCriticalGb: 10,
+      diskWarnPct: 7,
+      diskCriticalPct: 2,
       responseTimeWarnMs: 1000,
       enableCleanWorkspace: "On",
       enableDiskProbe: "On"
@@ -82,7 +84,8 @@ ShellRoot {
         serviceState: service.state,
         score: service.score,
         cleanWired: service.config.enableCleanWorkspace === true,
-        diskProbeWired: service.config.enableDiskProbe === true
+        diskProbeWired: service.config.enableDiskProbe === true,
+        pctWired: service.config.diskWarnPct === 7 && service.config.diskCriticalPct === 2
       }))
     }
   }

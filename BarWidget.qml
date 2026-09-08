@@ -34,6 +34,8 @@ BarWidget {
       queueBacklogThreshold: setting("queueBacklogThreshold", 10),
       diskWarnGb: setting("diskWarnGb", 25),
       diskCriticalGb: setting("diskCriticalGb", 10),
+      diskWarnPct: setting("diskWarnPct", 10),
+      diskCriticalPct: setting("diskCriticalPct", 3),
       responseTimeWarnMs: setting("responseTimeWarnMs", 1000),
       failurePenaltyCap: setting("failurePenaltyCap", 0),
       enableCleanWorkspace: setting("enableCleanWorkspace", "Off") !== "Off",

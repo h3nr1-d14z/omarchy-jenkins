@@ -7,18 +7,26 @@ watches a Jenkins CI controller and reports its health in the bar:
   colors, and plugin updates (via the Jenkins REST API over `curl`).
 - **Health scoring** (0–100) with levels `ok` / `warn` / `critical`,
   combining node offline/disk/response-time signals, queue backlog, stuck
-  items, failing jobs, and pending maintenance.
+  items, failing jobs, and pending maintenance. A node that goes offline
+  while disk-critical keeps the disk penalty (dying of a full disk is not
+  a refund), and a third or more of the agents offline forces `critical`
+  regardless of score.
 - **Notification layer** for five categories: controller down/up, node
   changes (including per-node disk: low, critical, recovered, and
   state-unknown — a node whose monitors stop reporting is itself
   flagged), job failures, queue backlog, and maintenance (quiet-down,
   restart-required, plugin updates). Each category can be toggled off.
 - **Safe actions** from the panel: quiet-down toggle, cancel a queue item,
-  and take a node offline / back online.
+  and take a node offline / back online. The node toggle re-reads the
+  node's state first and only flips when needed — a click on a node that
+  already sits in the wanted state is a no-op, never a reverse flip.
 - **Opt-in workspace wipe** (behind the `enableCleanWorkspace` setting,
-  off by default): a per-node *Clean ws* action that lists the workspace
-  directories under that node's default workspace root and deletes them
-  after an explicit confirm.
+  off by default): a per-node *Clean ws* action that lists the job
+  workspaces under that node's workspace root (folders walked
+  recursively, so folder-nested jobs appear by their full path) and
+  deletes the non-building ones after an explicit confirm. A job that is
+  building anywhere is skipped, so one busy executor never blocks
+  reclaiming an idle job's workspace.
 - **Job depth** from a single tree query: Jenkins health scores, last
   build (result/duration/age), never-green detection, folder rollups,
   and an Activity feed of the most recent builds across the catalog.
@@ -120,12 +128,10 @@ minute — never toasts.
 | `tokenFile` | `~/.config/jenkins-health/token` | File holding the API token (chmod 600). |
 | `refreshIntervalSec` | `30` | Poll interval. |
 | `queueBacklogThreshold` | `10` | Queue depth above which a backlog is flagged. |
-| `diskWarnGb` / `diskCriticalGb` | `25` / `10` | Node free-disk thresholds (GB), applied to the worse of workspace and `/tmp`. |
 | `responseTimeWarnMs` | `1000` | Node response-time threshold. |
-| `failurePenaltyCap` | `0` | Cap on the failing-jobs score penalty (0 = uncapped). |
-| `notifyController`, `notifyNodes`, `notifyFailures`, `notifyQueue`, `notifyMaintenance` | `On` | Per-category notification toggles. |
-| `enableCleanWorkspace` | `Off` | Shows the per-node *Clean ws* wipe (script-console delete; needs an admin-scoped token). |
-| `enableDiskProbe` | `Off` | Adds a per-node *Check disk* button and a background fleet sweep every 5 minutes (wall-clock, first sweep 5 min after enabling): usable space measured live on each agent via the script console (admin token), overriding the lazily-sampled monitor values; probed rows are marked with `*`. |
+| `diskWarnGb` / `diskCriticalGb` | `25` / `10` | Absolute free-disk floors (GB), applied to the worse of workspace and `/tmp`. |
+| `diskWarnPct` / `diskCriticalPct` | `10` / `3` | Percentage-of-volume thresholds for probed nodes: the effective threshold is `max(absolute, pct × volume total)`. `0` disables the percentage; monitor-only (unprobed) nodes always use the absolute floors. |
+| `enableCleanWorkspace` | `Off` | Per-node *Clean ws* wipe: lists job workspaces (folders walked recursively) and confirm-deletes the non-building ones via the script console (admin token; a job building anywhere is skipped). |
 
 ## IPC
 
