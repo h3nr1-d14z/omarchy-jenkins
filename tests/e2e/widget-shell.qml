@@ -65,7 +65,8 @@ ShellRoot {
       diskWarnGb: 25,
       diskCriticalGb: 10,
       responseTimeWarnMs: 1000,
-      enableCleanWorkspace: "On"
+      enableCleanWorkspace: "On",
+      enableDiskProbe: "On"
     })
   }
 
@@ -80,7 +81,8 @@ ShellRoot {
         chipText: widget.chipText,
         serviceState: service.state,
         score: service.score,
-        cleanWired: service.config.enableCleanWorkspace === true
+        cleanWired: service.config.enableCleanWorkspace === true,
+        diskProbeWired: service.config.enableDiskProbe === true
       }))
     }
   }

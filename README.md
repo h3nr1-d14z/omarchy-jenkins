@@ -125,10 +125,11 @@ minute — never toasts.
 | `failurePenaltyCap` | `0` | Cap on the failing-jobs score penalty (0 = uncapped). |
 | `notifyController`, `notifyNodes`, `notifyFailures`, `notifyQueue`, `notifyMaintenance` | `On` | Per-category notification toggles. |
 | `enableCleanWorkspace` | `Off` | Shows the per-node *Clean ws* wipe (script-console delete; needs an admin-scoped token). |
+| `enableDiskProbe` | `Off` | Adds a per-node *Check disk* button and a background fleet sweep every 5 minutes (wall-clock, first sweep 5 min after enabling): usable space measured live on each agent via the script console (admin token), overriding the lazily-sampled monitor values; probed rows are marked with `*`. |
 
 ## IPC
 
-The service exposes five commands to scripts and other plugins:
+The service exposes six commands to scripts and other plugins:
 
 ```bash
 qs ipc call jenkins-health refresh   # re-read the token, then poll now
@@ -136,6 +137,7 @@ qs ipc call jenkins-health status    # JSON state summary
 qs ipc call jenkins-health open      # open the detail panel (all monitors)
 qs ipc call jenkins-health close     # close the detail panel
 qs ipc call jenkins-health toggle    # toggle the detail panel
+qs ipc call jenkins-health probe     # measure disk on every online node now
 ```
 
 Handy for an omarchy-menu entry, e.g. an action running

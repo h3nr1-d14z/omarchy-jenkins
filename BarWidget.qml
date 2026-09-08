@@ -37,6 +37,7 @@ BarWidget {
       responseTimeWarnMs: setting("responseTimeWarnMs", 1000),
       failurePenaltyCap: setting("failurePenaltyCap", 0),
       enableCleanWorkspace: setting("enableCleanWorkspace", "Off") !== "Off",
+      enableDiskProbe: setting("enableDiskProbe", "Off") !== "Off",
       notifyController: setting("notifyController", "On") !== "Off",
       notifyNodes: setting("notifyNodes", "On") !== "Off",
       notifyFailures: setting("notifyFailures", "On") !== "Off",

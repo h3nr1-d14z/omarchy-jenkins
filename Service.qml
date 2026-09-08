@@ -98,6 +98,10 @@ Item {
     internal.runAction(action, targetId)
   }
 
+  function probeDisk(nodeName) {
+    internal.probeDisk(nodeName)
+  }
+
   function clearWorkspacePreview() {
     internal.workspacePreview = null
   }
@@ -119,6 +123,7 @@ Item {
     property string lastActionTarget: ""
     property var diskUnknownStreak: ({})
     property var diskUnknownAnnounced: ({})
+    property var diskProbes: ({})
     property bool busy: false
     property bool netrcOk: false
     property var fetched: ({})
@@ -164,9 +169,16 @@ Item {
       netrcOk = false
       snapshot = null
       prevSnapshot = null
+      // Probe state keys by node displayName: never bleed across
+      // controllers, and stamp the cycle clock so the first sweep waits a
+      // full interval after the (re)enable.
+      diskProbes = ({})
+      pendingProbeQueue = []
+      lastProbedNames = []
+      lastProbeCycleAt = Date.now()
       queueItems = []
-      busy = false
       stepIndex = -1
+      busy = false
       statusMessage = ""
       actionMessage = ""
 
@@ -372,6 +384,31 @@ Item {
 
       var controller = fetched.api ? Model.parseController(fetched.api, fetched.apiHeader || "") : null
       var nodesParsed = fetched.computer ? Model.parseNodes(fetched.computer) : null
+      // A fresh live probe (usable space, straight off the agent's JVM)
+      // overrides the lazily-sampled monitor numbers before assess().
+      // mergeProbeData reports which nodes actually merged (probedNames);
+      // an ONLINE node that loses coverage reverts to the monitor value,
+      // and that revert must never diff into a false "disk recovered" —
+      // re-baseline instead, the same convention as a blind auth window.
+      if (nodesParsed) {
+        nodesParsed = Model.mergeProbeData(nodesParsed, diskProbes, Date.now())
+        var probedNow = nodesParsed.probedNames || []
+        if (prevSnapshot) {
+          for (var li = 0; li < lastProbedNames.length; li++) {
+            var lostName = lastProbedNames[li]
+            if (probedNow.indexOf(lostName) !== -1) continue
+            for (var gi = 0; gi < nodesParsed.nodes.length; gi++) {
+              var gn = nodesParsed.nodes[gi]
+              if (gn.displayName === lostName && !gn.offline && !gn.temporarilyOffline) {
+                prevSnapshot = null
+                break
+              }
+            }
+            if (!prevSnapshot) break
+          }
+        }
+        lastProbedNames = probedNow
+      }
       var queueParsed = fetched.queue ? Model.parseQueue(fetched.queue) : null
       var pluginsParsed = fetched.plugins ? Model.parsePlugins(fetched.plugins) : null
       var ucParsed = fetched.uc ? Model.parseUpdateCenter(fetched.uc) : null
@@ -414,6 +451,29 @@ Item {
       // announce only after the node has been online-with-null-monitors
       // for K consecutive polls, and recover when it reports again.
       updateDiskUnknown(snap)
+
+      // Live disk probe: on the wall-clock cadence, every online node
+      // with a missing or half-fresh entry is measured; probes serialize
+      // over the single action slot, so a fleet sweep finishes well
+      // inside the freshness horizon and no reading lapses back to the
+      // stale monitor value mid-fleet (the false node-disk-ok class).
+      if (shouldProbe(Date.now()) && !pendingAction && !actionProcess.running) {
+        var probeQueue = []
+        var probeNodes = Array.isArray(snap.nodes) ? snap.nodes : []
+        for (var pi = 0; pi < probeNodes.length; pi++) {
+          var pn = probeNodes[pi]
+          if (pn.state !== "online") continue
+          var pEntry = diskProbes[pn.displayName]
+          var pAge = pEntry && typeof pEntry.probedAt === "number" ? pEntry.probedAt : 0
+          if (Date.now() - pAge > Model.probeFreshMs / 2) probeQueue.push(pn.displayName)
+        }
+        for (var qi = 0; qi < probeQueue.length; qi++) {
+          probeQueue[qi] = { action: "nodeDiskProbe", targetId: probeQueue[qi] }
+        }
+        lastProbeCycleAt = Date.now()
+        pendingProbeQueue = probeQueue
+        if (pendingProbeQueue.length > 0) dispatchNextProbe()
+      }
     }
 
     function updateDiskUnknown(snap) {
@@ -460,6 +520,76 @@ Item {
       diskUnknownAnnounced = nextAnnounced
     }
 
+    // ---- live disk probe state -----------------------------------------
+    // diskProbes[name] = { diskBytes, tempBytes, probedAt, rootFreeBytes,
+    // tmpFreeBytes, error? } — usable-space numbers measured on the
+    // node's own JVM, merged over the lazily-sampled monitor values in
+    function applyDiskProbe(name, probe) {
+      if (!name) return "disk probe failed: no node"
+      var next = {}
+      for (var k in diskProbes) next[k] = diskProbes[k]
+      var prev = next[name]
+      if (probe && probe.ok) {
+        next[name] = {
+          diskBytes: probe.rootUsable,
+          tempBytes: probe.tmpUsable,
+          rootFreeBytes: probe.rootFree,
+          tmpFreeBytes: probe.tmpFree,
+          probedAt: Date.now(),
+          error: ""
+        }
+        diskProbes = next
+        return "disk probed: " + (probe.rootUsable / 1e9).toFixed(1) + " GB usable"
+      }
+      var err = probe ? probe.error : "no response"
+      if (prev && typeof prev.diskBytes === "number") {
+        // Keep the measurement, annotate the failure: a transient probe
+        // error must not revert the node to the stale monitor value
+        // (the false "disk recovered" flap class).
+        prev.error = err
+      } else {
+        next[name] = { error: err, probedAt: 0 }
+      }
+      diskProbes = next
+      return "disk probe failed: " + err
+    }
+
+    // Probe cadence, wall-clock: one fleet sweep per probeCycleMs. A poll
+    // counter would self-amplify (each probe exit schedules a refresh
+    // poll, inflating the count), and wall-clock keeps the interval
+    // meaningful when refreshIntervalSec changes. The first sweep waits a
+    // full interval after enabling; onConfigChanged stamps the clock.
+    function shouldProbe(nowMs) {
+      if (!root.config || root.config.enableDiskProbe !== true) return false
+      if (pollGeneration < 0 || generation !== pollGeneration) return false
+      return (nowMs - lastProbeCycleAt) >= probeCycleMs
+    }
+
+    property real lastProbeCycleAt: 0
+    readonly property real probeCycleMs: 5 * 60 * 1000
+
+    property var pendingProbeQueue: []
+    property var lastProbedNames: []
+
+    function dispatchNextProbe() {
+      if (pendingProbeQueue.length === 0) return
+      if (pendingAction || actionProcess.running || crumbProcess.running) {
+        // A user action owns the slot; re-try on the next poll cycle.
+        return
+      }
+      var p = pendingProbeQueue[0]
+      pendingProbeQueue = pendingProbeQueue.slice(1)
+      pendingAction = p
+      lastActionKind = String(p.action)
+      lastActionTarget = String(p.targetId)
+      crumbProcess.command = Model.buildCurlArgs("/crumbIssuer/api/json", "GET", jenkinsUrl, netrcPath, null)
+      crumbProcess.running = true
+    }
+
+    function probeDisk(nodeName) {
+      runAction("nodeDiskProbe", nodeName)
+    }
+
     function notifyEvent(ev) {
       var glyphs = {
         "controller-down": "󰅙", "controller-up": "󰄬",
@@ -496,6 +626,13 @@ Item {
 
     function runAction(action, targetId) {
       if (!jenkinsUrl || !netrcOk) return
+      if (crumbProcess.running || actionProcess.running || pendingAction) {
+        // Single action slot: a user click racing a background probe
+        // would clobber its pendingAction and file the probe bytes
+        // under the wrong node. The probe sweep yields the same way.
+        actionMessage = "another action is in flight"
+        return
+      }
       pendingAction = (action && typeof action === "object")
         ? action
         : { action: String(action || ""), targetId: targetId }
@@ -519,7 +656,10 @@ Item {
       }
       var act = pendingAction
       pendingAction = null
-      if (!act) return
+      if (!act) {
+        if (pendingProbeQueue.length > 0) dispatchNextProbe()
+        return
+      }
       actionProcess.command = Model.buildActionCommand(act, act.targetId, jenkinsUrl, netrcPath, crumb)
       actionProcess.running = true
     }
@@ -530,6 +670,8 @@ Item {
         actionMessage = exitCode === 0
           ? "workspace list loaded"
           : "workspace list failed (exit " + exitCode + ")"
+      } else if (lastActionKind === "nodeDiskProbe") {
+        actionMessage = applyDiskProbe(lastActionTarget, Model.parseDiskProbe(exitCode, scriptBody(text)))
       } else if (lastActionKind === "nodeWorkspaceClean") {
         actionMessage = parseWorkspaceClean(exitCode, scriptBody(text))
         workspacePreview = null
@@ -539,6 +681,7 @@ Item {
           : "action failed (exit " + exitCode + ")"
       }
       actionRefreshTimer.restart()
+      if (pendingProbeQueue.length > 0) dispatchNextProbe()
     }
 
     // /scriptText answers plain text on this controller but is JSON
@@ -654,6 +797,7 @@ Item {
   //   qs ipc call jenkins-health refresh
   //   qs ipc call jenkins-health status
   //   qs ipc call jenkins-health open | close | toggle   (detail panel)
+  //   qs ipc call jenkins-health probe                  (live disk sweep)
   // Lives on the service (a single instance) so a multi-monitor bar can
   // never collide on the target name; panel commands relay to every
   // registered widget.
@@ -663,6 +807,17 @@ Item {
     function refresh(): string {
       root.refresh()
       return "ok"
+    }
+    function probe(): string {
+      var nodes = internal.snapshot && internal.snapshot.nodes
+        ? internal.snapshot.nodes : []
+      var q = []
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i].state === "online") q.push({ action: "nodeDiskProbe", targetId: nodes[i].displayName })
+      }
+      internal.pendingProbeQueue = q
+      internal.dispatchNextProbe()
+      return "probing " + q.length
     }
 
     function open(): string {

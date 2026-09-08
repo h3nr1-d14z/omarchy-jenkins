@@ -66,6 +66,7 @@ ShellRoot {
       diskCriticalGb: 10,
       responseTimeWarnMs: 1000,
       enableCleanWorkspace: true,
+      enableDiskProbe: true,
       notifyController: false,
       notifyNodes: false,
       notifyFailures: false,
@@ -181,14 +182,17 @@ ShellRoot {
       } else if (step === 3) {
         tabHeights.overview = Math.round(panel.implicitHeight)
         clickTab("Nodes")
-        clickButtonByText("Clean ws")     // first online node: dry-run list
       } else if (step === 4) {
-        clickButtonByText("Delete (2)")   // confirm: nodeWorkspaceClean
-        clickTab("Jobs")
+        clickButtonByText("Check disk")    // live probe via scriptText
       } else if (step === 5) {
+        clickButtonByText("Clean ws")      // first online node: dry-run list
+      } else if (step === 6) {
+        clickButtonByText("Delete (2)")    // confirm: nodeWorkspaceClean
+        clickTab("Jobs")
+      } else if (step === 7) {
         tabHeights.jobs = Math.round(panel.implicitHeight)
         clickTab("Activity")
-      } else if (step === 6) {
+      } else if (step === 8) {
         tabHeights.activity = Math.round(panel.implicitHeight)
         var texts = scanTexts(panel, [])
         activityProbe = {
@@ -204,14 +208,18 @@ ShellRoot {
   }
 
   Timer {
-    interval: 6500
     running: true
     repeat: false
+    interval: 8000
     onTriggered: {
       console.log("JH-E2E-I " + JSON.stringify({
         actionMessage: service.actionMessage,
         state: service.state,
         queueDepth: service.snapshot ? service.snapshot.queue.depth : -1,
+        probeProof: {
+          tier: service.snapshot && service.snapshot.nodes[0] ? service.snapshot.nodes[0].diskTier : "none",
+          gb: service.snapshot && service.snapshot.nodes[0] ? service.snapshot.nodes[0].diskGb : -1
+        },
         activeTab: panel.activeTab,
         activityProbe: activityProbe,
         tabHeights: tabHeights

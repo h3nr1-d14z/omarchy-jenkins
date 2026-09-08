@@ -309,12 +309,18 @@ run_ipc_phase() {
   QS_PID=$!
   sleep 2
 
-  local status refresh open close toggle
+  local status refresh open close toggle probe status2
   status=$(qs ipc --pid "$QS_PID" call jenkins-health status 2>&1 || true)
   refresh=$(qs ipc --pid "$QS_PID" call jenkins-health refresh 2>&1 || true)
   open=$(qs ipc --pid "$QS_PID" call jenkins-health open 2>&1 || true)
   close=$(qs ipc --pid "$QS_PID" call jenkins-health close 2>&1 || true)
   toggle=$(qs ipc --pid "$QS_PID" call jenkins-health toggle 2>&1 || true)
+  # probe: queues a scriptText probe per online node. The frozen harness
+  # mock answers POST with 501, so every probe fails inertly — the point
+  # is that the queue/chaining path runs and the service survives it.
+  probe=$(qs ipc --pid "$QS_PID" call jenkins-health probe 2>&1 || true)
+  sleep 3
+  status2=$(qs ipc --pid "$QS_PID" call jenkins-health status 2>&1 || true)
   kill_wait "$QS_PID"
   wait "$QS_PID" 2>/dev/null || true
   QS_PID=""
@@ -332,6 +338,15 @@ run_ipc_phase() {
     echo "PASS: IPC surface (status JSON, refresh, open, close, toggle)"
   else
     echo "FAIL: IPC — refresh='$refresh' open='$open' close='$close' toggle='$toggle'"
+    FAILED=1
+  fi
+  local probe_n
+  probe_n=$(printf '%s' "$probe" | sed -n 's/^probing \([0-9][0-9]*\)$/\1/p')
+  if [ -n "$probe_n" ] && [ "$probe_n" -ge 1 ] \
+     && printf '%s' "$status2" | jq -e '(.state == "ok") and (.score == 100)' >/dev/null 2>&1; then
+    echo "PASS: IPC probe queue (dispatched $probe_n nodes; merge coverage lives in the interaction phase)"
+  else
+    echo "FAIL: IPC probe — probe='$probe' status2='$status2'"
     FAILED=1
   fi
 }
@@ -369,7 +384,7 @@ run_widget_phase() {
     FAILED=1
     return
   fi
-  if ! printf '%s' "${w1#JH-E2E-W1 }" | jq -e '(.registered == 1) and (.widgetState == "ok") and (.chipText == "100") and (.serviceState == "ok") and (.cleanWired == true)' >/dev/null 2>&1; then
+  if ! printf '%s' "${w1#JH-E2E-W1 }" | jq -e '(.registered == 1) and (.widgetState == "ok") and (.chipText == "100") and (.serviceState == "ok") and (.cleanWired == true) and (.diskProbeWired == true)' >/dev/null 2>&1; then
     echo "FAIL: widget load — W1 invariant not met: $w1"
     FAILED=1
     return
@@ -530,7 +545,9 @@ class H(BaseHTTPRequestHandler):
                 # body actually carries it
                 f.write("script-name: %s\n" % ("build-agent-03" in unquote_plus(body) or "Built-In Node" in unquote_plus(body)))
         if self.path == "/scriptText":
-            if "deleteRecursive" in body:
+            if "RemotingDiagnostics" in body:
+                self._reply(200, b"PROBE rootUsable=3000000000 rootFree=9000000000 tmpUsable=3000000000 tmpFree=9000000000\n", "text/plain")
+            elif "deleteRecursive" in body:
                 self._reply(200, b"RESULT deleted=2 skipped=0 errors=0\n", "text/plain")
             else:
                 self._reply(200, b"DIR alpha\nDIR beta\nLISTED 2\n", "text/plain")
@@ -580,7 +597,7 @@ PYEOF2
   fi
   local d
   d=$(grep -o 'JH-E2E-I {.*}' "$TOKEN_DIR/interaction.log" | tail -n1 || true)
-  if [ -z "$d" ] || ! printf '%s' "${d#JH-E2E-I }" | jq -e '(.actionMessage == "deleted 2 workspace dirs (skipped 0, failed 0)") and (.queueDepth == 12) and (.activityProbe.tab == "activity") and (.activityProbe.sawBuilding == true) and (.activityProbe.sawRecent == true) and (.tabHeights.activity > .tabHeights.jobs)' >/dev/null 2>&1; then
+  if [ -z "$d" ] || ! printf '%s' "${d#JH-E2E-I }" | jq -e '(.actionMessage == "deleted 2 workspace dirs (skipped 0, failed 0)") and (.queueDepth == 12) and (.activityProbe.tab == "activity") and (.activityProbe.sawBuilding == true) and (.activityProbe.sawRecent == true) and (.tabHeights.activity > .tabHeights.jobs) and (.probeProof.tier == "critical") and (.probeProof.gb == 3)' >/dev/null 2>&1; then
     echo "FAIL: interaction — dump wrong: $d"
     FAILED=1
     rm -f "$srv" "$log"
@@ -589,8 +606,8 @@ PYEOF2
   local posts crumbs
   posts=$(grep -c "^POST " "$log" || true)
   crumbs=$(grep -c "crumb: action-crumb-1" "$log" || true)
-  if [ "$posts" -ne 5 ] || [ "$crumbs" -ne 5 ]; then
-    echo "FAIL: interaction — expected 5 POSTs with crumbs, got $posts/$crumbs (see stderr)"
+  if [ "$posts" -ne 6 ] || [ "$crumbs" -ne 6 ]; then
+    echo "FAIL: interaction — expected 6 POSTs with crumbs, got $posts/$crumbs (see stderr)"
     FAILED=1
     rm -f "$srv" "$log"
     return
@@ -603,15 +620,15 @@ PYEOF2
       return
     fi
   done
-  if [ "$(grep -c '^POST /scriptText' "$log" || true)" -ne 2 ] \
+  if [ "$(grep -c '^POST /scriptText' "$log" || true)" -ne 3 ] \
      || ! grep -q 'script-name: True' "$log"; then
-    echo "FAIL: interaction — scriptText list+clean POSTs with node name missing (see stderr)"
+    echo "FAIL: interaction — scriptText probe/list/clean POSTs with node name missing (see stderr)"
     FAILED=1
     rm -f "$srv" "$log"
     return
   fi
   rm -f "$srv" "$log"
-  echo "PASS: panel click-through (Bring online, Cancel, Quiet down, Clean ws list → scriptText, Delete → scriptText)"
+  echo "PASS: panel click-through (Bring online, Cancel, Quiet down, Check disk → scriptText, Clean ws list → scriptText, Delete → scriptText)"
 }
 
 run_render_both_phases() {
@@ -1013,6 +1030,16 @@ run_auth_phase
 run_firstrun_phase
 run_interaction_phase
 
+# A phase can pass its surface assertions while a JS handler threw and a
+# later action overwrote the evidence — grep every phase log for JS
+# runtime errors before declaring victory.
+js_errors=$(grep -hE 'ReferenceError|TypeError|is not a function|SyntaxError|Cannot read propert' \
+  "$TOKEN_DIR"/*.log 2>/dev/null || true)
+if [ -n "$js_errors" ]; then
+  echo "FAIL: JS runtime errors in phase logs (see stderr)"
+  echo "$js_errors" >&2
+  FAILED=1
+fi
 if [ "$FAILED" = 1 ]; then
   echo "E2E-FAILED"
   exit 1

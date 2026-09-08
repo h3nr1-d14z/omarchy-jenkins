@@ -188,7 +188,10 @@ Item {
   }
 
   function nodeStats(n) {
-    return fmtGb(n.diskGb) + " · " + fmtGb(n.tmpGb) + " tmp · "
+    // "*" marks a live-probed reading (measured on the agent this
+    // freshness window) as opposed to the lazily-sampled monitor values.
+    var measured = n.probedAt && (Date.now() - n.probedAt < Model.probeFreshMs) ? "*" : ""
+    return fmtGb(n.diskGb) + measured + " · " + fmtGb(n.tmpGb) + " tmp · "
       + (n.responseTimeMs === null || n.responseTimeMs === undefined
         ? "?" : n.responseTimeMs + "ms")
       + " · " + (n.executorsTotal - n.executorsIdle) + "/" + n.executorsTotal
@@ -200,6 +203,11 @@ Item {
   // turned the feature on in the plugin settings.
   readonly property bool cleanWorkspaceEnabled: root.service && root.service.config
     && root.service.config.enableCleanWorkspace === true
+
+  // Live disk probe follows the same opt-in convention as the workspace
+  // wipe: a script-console feature, off until the user turns it on.
+  readonly property bool diskProbeEnabled: root.service && root.service.config
+    && root.service.config.enableDiskProbe === true
 
   function nodeWorkspacePreview(n) {
     var p = root.service ? root.service.workspacePreview : null
@@ -566,7 +574,7 @@ Item {
                 id: nodeName
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - nodeStats.width - nodeClean.width - nodeAction.width - Style.space(24)
+                width: parent.width - nodeStats.width - nodeProbe.width - nodeClean.width - nodeAction.width - Style.space(24)
                 elide: Text.ElideRight
                 text: (modelData.state === "offline" ? "○ " : "● ") + modelData.displayName
                 color: root.nodeColor(modelData)
@@ -575,14 +583,29 @@ Item {
               }
               Text {
                 id: nodeStats
-                anchors.right: nodeClean.left
-                anchors.rightMargin: Style.space(8)
+                anchors.right: nodeProbe.left
+                anchors.rightMargin: nodeProbe.visible ? Style.space(8) : 0
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.nodeStats(modelData)
                 color: Color.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
               }
+              Button {
+                id: nodeProbe
+                visible: root.diskProbeEnabled && modelData.state === "online"
+                width: visible ? implicitWidth : 0
+                anchors.right: nodeClean.left
+                anchors.rightMargin: visible ? Style.space(4) : 0
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Check disk"
+                fontSize: Style.font.bodySmall
+                enabled: root.actionsEnabled
+                onClicked: if (root.service) {
+                  root.service.probeDisk(modelData.displayName)
+                }
+              }
+
               Button {
                 id: nodeClean
                 visible: root.cleanWorkspaceEnabled && modelData.state === "online"

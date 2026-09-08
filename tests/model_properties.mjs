@@ -732,6 +732,117 @@ for (let iter = 0; iter < 300; iter++) {
     'D15 script command keeps the error body on HTTP failures', '');
 }
 
+// ------------------------------------------------- live disk probe (P*)
+// The probe answers one line with four byte counts (usable before free
+// for root and tmp). mergeProbeData overlays measured usable space on
+// the lazily-sampled monitor values while fresh, never on offline nodes,
+// and age-outs revert to monitor values only by timestamp.
+{
+  const P = 'node-p';
+  const line = 'PROBE rootUsable=0 rootFree=10467270656 tmpUsable=0 tmpFree=10467270656';
+  const pr = Model.parseDiskProbe(0, line + '\n');
+  ok(pr.ok === true && pr.rootUsable === 0 && pr.tmpUsable === 0
+    && pr.rootFree === 10467270656, 'P1 probe line parses all four counts', '');
+  const pv = Model.parseDiskProbe(0, 'NODE_OFFLINE\n');
+  ok(pv.ok === false && pv.error === 'NODE_OFFLINE', 'P1 offline verdict parses', '');
+  const pd = Model.parseDiskProbe(22, '403 administer');
+  ok(pd.ok === false && pd.denied === true
+    && /admin-scoped/.test(pd.error), 'P1 403 body parses to the admin-token message', '');
+  const junk = Model.parseDiskProbe(0, 'random body');
+  ok(junk.ok === false && /unexpected response/.test(junk.error), 'P1 junk parses to a failed probe', '');
+
+  const script = Model.diskProbeScript(P);
+  ok(script.includes("getComputer('" + P + "')") && script.includes('RemotingDiagnostics'),
+    'P2 probe script resolves the computer by name', '');
+  ok(script.includes('usableSpace') && !script.includes('File.getFreeSpace()'),
+    'P2 probe script reads usable space', '');
+  const cmd = Model.buildActionCommand({ action: 'nodeDiskProbe', targetId: P }, undefined, 'https://ci.example.com', '/tmp/n', 'cr');
+  ok(cmd[0] === 'curl' && hasPair(cmd, '--data-urlencode', 'script=' + script),
+    'P2 probe rides the scriptText command shape', '');
+
+  const now = 10_000_000;
+  const nodes = () => ({ nodes: [
+    { displayName: P, offline: false, temporarilyOffline: false, diskBytes: 28e9, tempBytes: 28e9 },
+    { displayName: 'q', offline: true, temporarilyOffline: false, diskBytes: 5e9, tempBytes: 5e9 },
+  ] });
+  let np = nodes();
+  Model.mergeProbeData(np, { [P]: { diskBytes: 0, tempBytes: 0, probedAt: now - 1000 } }, now, 900_000);
+  ok(np.nodes[0].diskBytes === 0 && np.nodes[0].tempBytes === 0,
+    'P3 fresh probe overrides monitor values for online nodes', '');
+  np = nodes();
+  Model.mergeProbeData(np, { [P]: { diskBytes: 0, tempBytes: 0, probedAt: now - 1000 } }, now + 901_000, 900_000);
+  ok(np.nodes[0].diskBytes === 28e9, 'P3 expired probe reverts to monitor values', '');
+  np = nodes();
+  Model.mergeProbeData(np, { q: { diskBytes: 0, tempBytes: 0, probedAt: now - 1000 } }, now, 900_000);
+  ok(np.nodes[1].diskBytes === 5e9, 'P3 offline nodes keep frozen monitor values', '');
+  np = nodes();
+  Model.mergeProbeData(np, null, now, 900_000);
+  Model.mergeProbeData(null, {}, now, 900_000);
+  ok(np.nodes[0].diskBytes === 28e9, 'P3 malformed probe data is inert', '');
+
+  // The merged values flow through assess into the tier with no new
+  // event types: a 0-usable probe makes the node critical.
+  const cfg = genConfig();
+  cfg.diskWarnGb = 25; cfg.diskCriticalGb = 10; cfg.notifyNodes = true;
+  const comp = { computer: [
+    { displayName: P, offline: false, temporarilyOffline: false, monitorData: {
+      'hudson.node_monitors.DiskSpaceMonitor': { size: 28e9 },
+      'hudson.node_monitors.TemporarySpaceMonitor': { size: 28e9 },
+      'hudson.node_monitors.ResponseTimeMonitor': { average: 50 },
+    }, executors: [] },
+  ] };
+  const ctrl = { version: '2.568.2', mode: 'NORMAL', quietingDown: false,
+    useCrumbs: true, useSecurity: true, numExecutors: 2, jobs: [] };
+  const snapA = Model.assess(ctrl, Model.parseNodes(comp), null, null, null, cfg, now);
+  ok(snapA.nodes[0].diskTier === 'ok', 'P4 stale monitor says ok', '');
+  const probed = Model.parseNodes(comp);
+  Model.mergeProbeData(probed, { [P]: { diskBytes: 0, tempBytes: 0, probedAt: now - 1000 } }, now, 900_000);
+  const snapB = Model.assess(ctrl, probed, null, null, null, cfg, now);
+  ok(snapB.nodes[0].diskTier === 'critical', 'P4 measured 0 usable flips the tier to critical', '');
+  const ev = Model.diffEvents(snapA, snapB, cfg);
+  ok(ev.some(e => e.type === 'node-disk-critical' && /node-p/.test(e.message)),
+    'P4 the flip emits the standard node-disk-critical edge', '');
+}
+
+// P5: generator/parser round-trip — the line diskProbeScript emits and
+// the line parseDiskProbe accepts must share one canonical shape, or a
+// key-order drift makes every real probe parse as junk while mocks and
+// unit literals keep passing. Also pin probedNames, the coverage set the
+// Service re-baselines on.
+{
+  const KEYS = ['rootUsable', 'rootFree', 'tmpUsable', 'tmpFree'];
+  const script = Model.diskProbeScript('rt-node');
+  const emitOrder = KEYS.every(k => script.includes(k + "='"))
+    && script.includes("println('PROBE ' + m.group(0))");
+  ok(emitOrder,
+    'P5 script emits the keyed fields and relays the matched line', '');
+  const line = 'PROBE ' + KEYS.map(k => k + '=7').join(' ');
+  const rt = Model.parseDiskProbe(0, line + '\n');
+  ok(rt.ok === true && KEYS.every(k => rt[k] === 7),
+    'P5 parseDiskProbe accepts every key the script emits', '');
+  const rtNoisy = Model.parseDiskProbe(0, 'Result: junk\n' + line + '\n');
+  ok(rtNoisy.ok === true && rtNoisy.rootUsable === 7,
+    'P5 parse finds the PROBE line amid other output', '');
+
+  const nodes = () => ({ nodes: [
+    { displayName: 'a', offline: false, temporarilyOffline: false, diskBytes: 1e9, tempBytes: 1e9 },
+    { displayName: 'b', offline: false, temporarilyOffline: false, diskBytes: 1e9, tempBytes: 1e9 },
+    { displayName: 'c', offline: true, temporarilyOffline: false, diskBytes: 1e9, tempBytes: 1e9 },
+  ] });
+  const now = 5_000_000;
+  const pd = {
+    a: { diskBytes: 0, tempBytes: 0, probedAt: now - 1000 },
+    b: { diskBytes: 0, tempBytes: 0, probedAt: now - 2_000_000 }, // expired
+    c: { diskBytes: 0, tempBytes: 0, probedAt: now - 1000 },      // offline node
+  };
+  const merged = Model.mergeProbeData(nodes(), pd, now, 900_000);
+  ok(JSON.stringify(merged.probedNames) === '["a"]',
+    'P5 probedNames lists only fresh online merges', '');
+  const none = Model.mergeProbeData(nodes(), null, now, 900_000);
+  ok(Array.isArray(none.probedNames) && none.probedNames.length === 0,
+    'P5 probedNames is empty with no probe data', '');
+}
+
 // ------------------------------------------------------------------- summary
 
 console.log(`property sweep: ${N} scenarios, ${checks} checks`);

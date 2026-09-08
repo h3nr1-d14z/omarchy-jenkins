@@ -391,6 +391,9 @@ function assess(controller, nodes, queue, plugins, updateCenter, config, now) {
       diskGb: diskGb,
       tmpGb: tmpGb,
       diskTier: diskTier,
+      probedAt: typeof node.probedAt === "number" ? node.probedAt : null,
+      rootFreeBytes: typeof node.rootFreeBytes === "number" ? node.rootFreeBytes : null,
+      tmpFreeBytes: typeof node.tmpFreeBytes === "number" ? node.tmpFreeBytes : null,
       responseTimeMs: node.responseTimeMs,
       executorsTotal: node.executorsTotal,
       executorsIdle: node.executorsIdle,
@@ -938,6 +941,8 @@ function buildActionCommand(action, targetId, jenkinsUrl, netrcPath, crumb) {
     endpoint = "/cancelQuietDown"
   } else if (kind === "nodeOffline") {
     endpoint = "/computer/" + encodeURIComponent(id) + "/doChangeOffline?offline=true&offlineMessage=jenkins-health"
+  } else if (kind === "nodeDiskProbe") {
+    return buildScriptCommand(diskProbeScript(id), jenkinsUrl, netrcPath, crumb)
   } else if (kind === "nodeOnline") {
     endpoint = "/computer/" + encodeURIComponent(id) + "/doChangeOffline?offline=false"
   } else if (kind === "nodeWorkspaceList" || kind === "nodeWorkspaceClean") {
@@ -1000,6 +1005,112 @@ function workspaceCleanScript(nodeName) {
   ].join("\n")
 }
 
+// ---- live disk probe (opt-in) ------------------------------------------
+// Jenkins's DiskSpaceMonitor samples lazily (it refreshes on node activity,
+// not a wall clock), so a filling volume can sit far below the thresholds
+// while the monitor still reports an old number — a probe of a real
+// controller found 0 GB usable where the monitor said 28 GB. The probe
+// asks the node itself, over the same controller /scriptText endpoint the
+// workspace scripts use: the script below resolves the Computer, then
+// runs one script ON THE NODE'S CHANNEL (RemotingDiagnostics — the same
+// primitive /computer/<node>/scriptText is built on) reading
+// File.usableSpace for the workspace root and the agent JVM's tmpdir.
+// usableSpace is the gate, not freeSpace: on a disk with a root reserve,
+// freeSpace counts bytes a build process cannot write.
+var PROBE_FRESH_MS = 15 * 60 * 1000
+
+function diskProbeScript(nodeName) {
+  return [
+    "def c = Jenkins.instance.getComputer(" + jhGroovyString(nodeName) + ")",
+    "if (c == null) { c = Jenkins.instance.computers.toList().find { it.displayName == " + jhGroovyString(nodeName) + " } }",
+    "if (c == null) { println('NO_SUCH_COMPUTER'); return }",
+    "if (!c.online) { println('NODE_OFFLINE'); return }",
+    "def root = c.node != null ? c.node.rootPath : null",
+    "if (root == null) { println('NO_WORKSPACE_ROOT'); return }",
+    // The channel script rides a double-quoted Groovy literal: the root
+    // path is interpolated through inspect() (a valid, escaped literal —
+    // the only value that is not fixed text besides the node name, which
+    // is escaped by jhGroovyString). The exchange is KEYED (name=value
+    // pairs, extracted by regex below) so a prefix like RemotingDiagnostics'
+    // "Result:" or stray output can never misalign the fields.
+    "def probe = \"def r = new File(${root.getRemote().inspect()}); def t = new File(System.getProperty('java.io.tmpdir')); 'rootUsable=' + r.usableSpace + ' rootFree=' + r.freeSpace + ' tmpUsable=' + t.usableSpace + ' tmpFree=' + t.freeSpace\"",
+    "def res = c.channel != null ? hudson.util.RemotingDiagnostics.executeGroovy(probe.toString(), c.channel) : null",
+    // Built-in node without a channel: its root IS controller-local.
+    "if (res == null) {",
+    "  def r0 = new File(root.getRemote())",
+    "  def t0 = new File(System.getProperty('java.io.tmpdir'))",
+    "  res = 'rootUsable=' + r0.usableSpace + ' rootFree=' + r0.freeSpace + ' tmpUsable=' + t0.usableSpace + ' tmpFree=' + t0.freeSpace",
+    "}",
+    "def m = res =~ /rootUsable=(\\d+) rootFree=(\\d+) tmpUsable=(\\d+) tmpFree=(\\d+)/",
+    "if (m.find()) { println('PROBE ' + m.group(0)) } else { println('NO_PROBE_RESULT') }"
+  ].join("\n")
+}
+
+// PROBE answers one line with four byte counts. Verdict lines mean "not
+// ok" without being errors; a 403-class body parses to the admin-token
+// message, exactly like the workspace actions.
+function parseDiskProbe(exitCode, body) {
+  var text = String(body || "")
+  if (exitCode !== 0) {
+    var denied = /administer|script console|RunScripts|403/i.test(text)
+    return { ok: false, denied: denied,
+      error: denied ? "no script-console permission — the token must be admin-scoped"
+        : "probe failed (exit " + exitCode + ")" }
+  }
+  var m = text.match(/PROBE rootUsable=(\d+) rootFree=(\d+) tmpUsable=(\d+) tmpFree=(\d+)/)
+  if (!m) {
+    var verdicts = ["NO_SUCH_COMPUTER", "NODE_OFFLINE", "NO_WORKSPACE_ROOT", "NO_PROBE_RESULT"]
+    var found = ""
+    for (var i = 0; i < verdicts.length; i++) {
+      if (text.indexOf(verdicts[i]) !== -1) { found = verdicts[i]; break }
+    }
+    return { ok: false, denied: false,
+      error: found ? found : "probe failed (unexpected response)" }
+  }
+  return {
+    ok: true, denied: false,
+    rootUsable: parseInt(m[1], 10),
+    rootFree: parseInt(m[2], 10),
+    tmpUsable: parseInt(m[3], 10),
+    tmpFree: parseInt(m[4], 10)
+  }
+}
+
+// Merge live probe values into a parseNodes result before assess(): a
+// fresh probe for an ONLINE node replaces the lazily-sampled monitor
+// numbers, and every downstream behavior (disk tier, score, edges,
+// toasts) then runs on measured disk with no new event types. Freshness
+// is deliberately generous: a transient probe failure must not bounce
+// the tier back to a stale monitor reading, or the disk edges would
+// flap. Offline nodes keep their frozen monitor values (the existing
+// no-flap convention). The names that actually merged ride back as
+// probedNames so the Service can re-baseline (prevSnapshot = null) when
+// an online node LOSES coverage: reverting to the stale monitor value
+// must never diff into a false "disk recovered" event.
+function mergeProbeData(nodesParsed, probeData, nowMs, freshMs) {
+  if (!jhIsObject(nodesParsed) || !Array.isArray(nodesParsed.nodes)) return nodesParsed
+  var merged = []
+  if (jhIsObject(probeData)) {
+    var horizon = typeof freshMs === "number" ? freshMs : PROBE_FRESH_MS
+    for (var i = 0; i < nodesParsed.nodes.length; i++) {
+      var node = nodesParsed.nodes[i]
+      var p = probeData[node.displayName]
+      if (!jhIsObject(p)) continue
+      if (node.offline || node.temporarilyOffline) continue
+      var probedAt = typeof p.probedAt === "number" ? p.probedAt : 0
+      if (nowMs - probedAt > horizon) continue
+      if (typeof p.diskBytes === "number") node.diskBytes = p.diskBytes
+      if (typeof p.tempBytes === "number") node.tempBytes = p.tempBytes
+      node.probedAt = probedAt
+      node.rootFreeBytes = typeof p.rootFreeBytes === "number" ? p.rootFreeBytes : null
+      node.tmpFreeBytes = typeof p.tmpFreeBytes === "number" ? p.tmpFreeBytes : null
+      merged.push(node.displayName)
+    }
+  }
+  nodesParsed.probedNames = merged
+  return nodesParsed
+}
+
 // scriptText POST: longer timeout than polling actions — a sweep over a
 // multi-hundred-GB workspace tree legitimately takes minutes. The script
 // body rides --data-urlencode, never the URL. --fail-with-body (instead
@@ -1042,6 +1153,10 @@ if (typeof module !== "undefined" && module.exports) {
     historyAppendDisk: historyAppendDisk,
     historyCompactDisk: historyCompactDisk,
     historyCompactDisks: historyCompactDisks,
+    diskProbeScript: diskProbeScript,
+    parseDiskProbe: parseDiskProbe,
+    mergeProbeData: mergeProbeData,
+    probeFreshMs: PROBE_FRESH_MS,
     historySeries: historySeries,
     sparklineSlots: sparklineSlots,
     buildNetrc: buildNetrc,
