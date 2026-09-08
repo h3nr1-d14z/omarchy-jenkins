@@ -6,8 +6,8 @@
 # symlinks, reserved IDs). This script checks requirements the binary does
 # not cover: exact plugin id, kind pair, keepLoaded, bar-widget settings
 # schema, defaults consistency, the marketplace's community field-length
-# limits (which the binary and the gate's own error message disagree on),
-# README install/remove docs, LICENSE, and a secret scan.
+# limits (omarchy plugin validate is blind to them entirely), README
+# install/remove docs, LICENSE, and a secret scan.
 #
 # Always exits 0: failures lower the plugin score, they never break the
 # harness. Prints one PASS/FAIL line per check and a final
