@@ -277,25 +277,49 @@ Item {
     function netrcCommand() {
       // Everything reaches the script as a positional argument: no quoting
       // hazards, and the token itself is only ever touched inside bash.
+      // Credential read (marketplace security review): the token path must
+      // be a regular file owned by the current user with owner-only mode
+      // bits and a conservative size (4 KiB); the read itself opens with
+      // nofollow+nonblock (dd) so a symlinked path fails ELOOP and a FIFO
+      // cannot wedge the helper, and it reads at most one bounded block.
+      // The netrc is published by writing a random, exclusively-created
+      // 0600 temp file in the target directory and renaming it over the
+      // final path: credentials never exist at a predictable path in a
+      // partial or permissive state, and a pre-planted symlink at the
+      // netrc path is replaced by the rename rather than written through.
       var script = [
         'umask 077',
         'set -e',
         'out="$1"; tf="${2/#\\~/$HOME}"; user="$3"; url="$4"',
         'h="${url#*://}"; h="${h%%/*}"; h="${h%%:*}"',
-        'tok="$(cat "$tf" 2>/dev/null || true)"',
-        'if [ -z "$h" ] || [ -z "$user" ] || [ -z "$tok" ]; then echo notoken; exit 0; fi',
-        'mkdir -p "${out%/*}" 2>/dev/null || true',
-        "printf 'machine %s\\nlogin %s\\npassword %s\\n' \"$h\" \"$user\" \"$tok\" > \"$out\"",
-        'chmod 600 "$out"',
+        'if [ -z "$h" ] || [ -z "$user" ]; then echo notoken; exit 0; fi',
+        'if [ ! -e "$tf" ]; then echo notoken; exit 0; fi',
+        'if [ -L "$tf" ] || [ ! -f "$tf" ]; then echo badtoken; exit 0; fi',
+        'set -- $(stat -c "%u %a" "$tf" 2>/dev/null)',
+        'if [ "$#" -ne 2 ] || [ "$1" != "$(id -u)" ] || [ "$((8#$2 & 8#077))" -ne 0 ]; then echo badtoken; exit 0; fi',
+        'sz="$(stat -c %s "$tf" 2>/dev/null)"',
+        'if [ "$sz" -le 0 ] || [ "$sz" -gt 4096 ]; then echo badtoken; exit 0; fi',
+        'tok="$(dd if="$tf" iflag=nofollow,nonblock bs=4096 count=1 2>/dev/null || true)"',
+        '[ -n "$tok" ] || { echo notoken; exit 0; }',
+        'd="${out%/*}"',
+        'mkdir -p "$d" 2>/dev/null || { echo writefail; exit 0; }',
+        'chmod 700 "$d" 2>/dev/null || true',
+        'tmp="$(mktemp "$d/.netrc.XXXXXX")" || { echo writefail; exit 0; }',
+        "printf 'machine %s\\nlogin %s\\npassword %s\\n' \"$h\" \"$user\" \"$tok\" > \"$tmp\"",
+        'chmod 600 "$tmp"',
+        'mv -f "$tmp" "$out" || { rm -f "$tmp"; echo writefail; exit 0; }',
         'echo ok'
       ].join("\n")
       return ["bash", "-c", script, "jh-netrc", netrcPath, tokenFile, user, jenkinsUrl]
     }
 
     function onNetrcExit(text) {
-      if (String(text || "").trim() !== "ok") {
+      var marker = String(text || "").trim()
+      if (marker !== "ok") {
         stateName = "noauth"
-        statusMessage = "cannot read the API token or write the netrc file — see README"
+        statusMessage = marker === "badtoken"
+          ? "token file must be a regular file you own, mode 600, at most 4 KiB"
+          : "cannot read the API token or write the netrc file — see README"
         return
       }
       netrcOk = true

@@ -580,12 +580,18 @@ check('buildNetrc: password line with the token', () => {
   assert.ok(lines.includes('password tok-abc123'), JSON.stringify(lines));
 });
 
-check('buildCurlArgs: core flags (curl, -fsS, --max-time 8)', () => {
+check('buildCurlArgs: byte-cap wrap + core flags (curl, -fsS, --max-time 8)', () => {
   const args = M.buildCurlArgs('/api/json', 'GET', 'https://ci.example.com', '/tmp/netrc', null);
   assert.ok(Array.isArray(args), 'not an array');
-  assert.equal(args[0], 'curl');
-  assert.equal(args[1], '-fsS');
+  assert.equal(args[0], 'bash');
+  assert.equal(args[1], '-c');
+  assert.ok(args[2].includes('set -o pipefail'), 'no pipefail');
+  assert.ok(args[2].includes('head -c ' + M.maxResponseBytes), 'no head cap');
+  assert.equal(args[3], 'jh-curl');
+  assert.equal(args[4], 'curl');
+  assert.equal(args[5], '-fsS');
   assert.ok(hasPair(args, '--max-time', '8'), JSON.stringify(args));
+  assert.ok(hasPair(args, '--max-filesize', String(M.maxResponseBytes)), JSON.stringify(args));
 });
 
 check('buildCurlArgs: --netrc-file points at the netrc path', () => {

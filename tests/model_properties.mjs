@@ -345,7 +345,12 @@ for (let iter = 0; iter < N; iter++) {
 
   const crumb = chance(0.5) ? 'crumb-' + iter : null;
   const args = Model.buildCurlArgs('/api/json', 'GET', url, '/tmp/n', crumb);
-  ok(args[0] === 'curl' && args[1] === '-fsS', 'I13 curl prefix', ctx);
+  ok(args[0] === 'bash' && args[1] === '-c' && args[3] === 'jh-curl'
+    && args[4] === 'curl' && args[5] === '-fsS', 'I13 curl prefix (byte-cap wrapped)', ctx);
+  ok(args[2].includes('set -o pipefail') && args[2].includes('head -c ' + Model.maxResponseBytes),
+    'I13 producer-side byte cap bounds what QML can ever collect', ctx);
+  ok(hasPair(args, '--max-filesize', String(Model.maxResponseBytes)),
+    'I13 curl fast-fails oversized declared bodies', ctx);
   ok(hasPair(args, '--max-time', '8') && hasPair(args, '--netrc-file', '/tmp/n'), 'I13 curl pairs', ctx);
   const urlArg = args[args.length - 1];
   ok(!urlArg.includes('//jenkins') || urlArg.includes('://'), 'I13 no double slash', ctx + ' ' + urlArg);
@@ -364,12 +369,13 @@ for (let iter = 0; iter < N; iter++) {
     // v0.5.0: the toggles READ state first; only the Service decides
     // whether to POST the flip (toggleOffline is a blind flip, so a
     // satisfied state must never be POSTed at).
-    ok(Array.isArray(cmd) && cmd[0] === 'curl' && !hasPair(cmd, '-X', 'POST'),
+    ok(Array.isArray(cmd) && cmd[0] === 'bash' && cmd[4] === 'curl' && !hasPair(cmd, '-X', 'POST'),
       'I14 toggle reads state (GET, no -X POST)', ctx);
     ok(cmd[cmd.length - 1].endsWith('/computer/42/api/json?tree=offline%2CtemporarilyOffline'),
       'I14 toggle state url', ctx);
   } else {
-    ok(Array.isArray(cmd) && cmd[0] === 'curl' && hasPair(cmd, '-X', 'POST'), 'I14 action POST', ctx);
+    ok(Array.isArray(cmd) && cmd[0] === 'bash' && cmd[4] === 'curl' && hasPair(cmd, '-X', 'POST'),
+      'I14 action POST', ctx);
     ok(cmd[cmd.length - 1].startsWith('https://'), 'I14 action url', ctx);
   }
   if (action === 'nodeWorkspaceList' || action === 'nodeWorkspaceClean') {
@@ -750,8 +756,12 @@ for (let iter = 0; iter < 300; iter++) {
   ok(cleanScript.includes('deleteRecursive'),
     'D14 clean script deletes non-building dirs only', '');
   const scriptCmd = Model.buildScriptCommand(cleanScript, 'https://ci.example.com/', '/tmp/n', 'cr');
-  ok(scriptCmd[0] === 'curl' && hasPair(scriptCmd, '--data-urlencode', 'script=' + cleanScript),
-    'D15 script body rides --data-urlencode', '');
+  ok(scriptCmd[0] === 'bash' && scriptCmd[4] === 'curl'
+    && hasPair(scriptCmd, '--data-urlencode', 'script=' + cleanScript),
+    'D15 script body rides --data-urlencode (byte-cap wrapped)', '');
+  ok(scriptCmd[2].includes('head -c ' + Model.maxResponseBytes)
+    && hasPair(scriptCmd, '--max-filesize', String(Model.maxResponseBytes)),
+    'D15 script-console path shares the producer-side response-byte cap', '');
   ok(scriptCmd[scriptCmd.length - 1] === 'https://ci.example.com/scriptText',
     'D15 scriptText endpoint joined', '');
   ok(hasPair(scriptCmd, '--max-time', '600'), 'D15 script sweep gets a long timeout', '');
@@ -785,7 +795,8 @@ for (let iter = 0; iter < 300; iter++) {
   ok(script.includes('usableSpace') && !script.includes('File.getFreeSpace()'),
     'P2 probe script reads usable space', '');
   const cmd = Model.buildActionCommand({ action: 'nodeDiskProbe', targetId: P }, undefined, 'https://ci.example.com', '/tmp/n', 'cr');
-  ok(cmd[0] === 'curl' && hasPair(cmd, '--data-urlencode', 'script=' + script),
+  ok(cmd[0] === 'bash' && cmd[4] === 'curl'
+    && hasPair(cmd, '--data-urlencode', 'script=' + script),
     'P2 probe rides the scriptText command shape', '');
 
   const now = 10_000_000;

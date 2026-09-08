@@ -32,7 +32,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-printf 'e2e-token-123\n' > "$TOKEN_DIR/token"
+printf 'e2e-token-123\n' > "$TOKEN_DIR/token" && chmod 600 "$TOKEN_DIR/token"
 
 # Quickshell sandboxes a config to its own folder, but the omarchy plugin
 # validator forbids symlinks inside the plugin tree — so the config folder
@@ -1002,7 +1002,7 @@ run_auth_phase() {
 run_firstrun_phase() {
   rm -rf "$HOME/.jh-e2e-test"
   mkdir -p "$HOME/.jh-e2e-test"
-  printf 'e2e-token-123\n' > "$HOME/.jh-e2e-test/token"
+  printf 'e2e-token-123\n' > "$HOME/.jh-e2e-test/token" && chmod 600 "$HOME/.jh-e2e-test/token"
 
   start_mock healthy
   JH_E2E_TOKEN_FILE="$TOKEN_DIR/token" \

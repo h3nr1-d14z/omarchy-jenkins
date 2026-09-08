@@ -956,6 +956,24 @@ function buildNetrc(user, token, jenkinsUrl) {
     + "\npassword " + (token === undefined || token === null ? "" : String(token))
 }
 
+// Producer-side response-byte cap (marketplace security review): every
+// HTTP command runs inside `"$@" | head -c MAX` so a compromised or
+// malfunctioning endpoint cannot stream an unbounded body into the QML
+// StdioCollector, which buffers the whole stream inside the long-lived
+// shell process — the script-console request alone has a 600s budget.
+// --max-filesize is the curl-native fast-fail when the endpoint declares
+// an oversized Content-Length; head -c bounds everything else (chunked
+// replies, endless streams). pipefail keeps curl's exit code
+// authoritative, so truncation (curl dies on SIGPIPE, exit 141) and
+// size-limit failures (exit 63) both fail closed.
+var MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+function boundedCommand(argv) {
+  return ["bash", "-c",
+    "set -o pipefail; \"\$@\" | head -c " + MAX_RESPONSE_BYTES,
+    "jh-curl"].concat(argv)
+}
+
 function buildCurlArgs(endpoint, method, jenkinsUrl, netrcPath, crumb, timeoutSec) {
   // timeoutSec defaults to 8 for the light endpoints; the catalog tree
   // query needs far more (a cold Jenkins cache on a large controller
@@ -963,6 +981,7 @@ function buildCurlArgs(endpoint, method, jenkinsUrl, netrcPath, crumb, timeoutSe
   // turns a cold cache into a permanent "controller unreachable", since
   // the timing-out poll never warms the cache it is waiting for).
   var args = ["curl", "-fsS", "--max-time", String(jhNum(timeoutSec, 8)),
+    "--max-filesize", String(MAX_RESPONSE_BYTES),
     "--netrc-file", netrcPath, "-H", "Accept: application/json"]
   if (method && method !== "GET") {
     args.push("-X", method)
@@ -971,7 +990,7 @@ function buildCurlArgs(endpoint, method, jenkinsUrl, netrcPath, crumb, timeoutSe
     args.push("-H", "Jenkins-Crumb: " + crumb)
   }
   args.push(jhJoinUrl(jenkinsUrl, endpoint))
-  return args
+  return boundedCommand(args)
 }
 
 // Safe actions: quietDown / cancelQuietDown / cancelQueueItem /
@@ -1230,14 +1249,15 @@ function mergeProbeData(nodesParsed, probeData, nowMs, freshMs) {
 // of -f) keeps the error body in stdout, so a 403 from a non-admin token
 // surfaces as a readable permission message instead of a bare exit code.
 function buildScriptCommand(script, jenkinsUrl, netrcPath, crumb) {
-  var args = ["curl", "-sS", "--fail-with-body", "--max-time", "600", "--netrc-file", netrcPath,
-    "-H", "Accept: application/json"]
+  var args = ["curl", "-sS", "--fail-with-body", "--max-time", "600",
+    "--max-filesize", String(MAX_RESPONSE_BYTES),
+    "--netrc-file", netrcPath, "-H", "Accept: application/json"]
   if (crumb) {
     args.push("-H", "Jenkins-Crumb: " + crumb)
   }
   args.push("-X", "POST", "--data-urlencode", "script=" + script,
     jhJoinUrl(jenkinsUrl, "/scriptText"))
-  return args
+  return boundedCommand(args)
 }
 
 
@@ -1273,6 +1293,7 @@ if (typeof module !== "undefined" && module.exports) {
     historySeries: historySeries,
     sparklineSlots: sparklineSlots,
     buildNetrc: buildNetrc,
-    buildCurlArgs: buildCurlArgs
+    buildCurlArgs: buildCurlArgs,
+    maxResponseBytes: MAX_RESPONSE_BYTES
   }
 }
