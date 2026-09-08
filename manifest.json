@@ -5,7 +5,7 @@
   "version": "0.5.0",
   "author": "H3nr1 D14z",
   "license": "MIT",
-  "description": "Jenkins controller health in the Omarchy bar: live polling of controller, nodes (workspace and /tmp disk), queue, jobs, and plugin updates; notifications for controller outages, node state and disk changes, job failures, queue backlogs, and maintenance; opt-in live disk probing of agents (usable space and volume totals, straight from the node) with percentage-of-volume thresholds; the chip goes critical when a third or more of the agents are down; safe actions (quiet-down toggle, cancel queue item, node online/offline with state re-read) plus an opt-in per-node workspace wipe (admin token, per-job building checks).",
+  "description": "Jenkins health in the Omarchy bar: live polling of controller, nodes (workspace and /tmp disk), queue, jobs, and updates; notifications for outages, node and disk changes, job failures, queue backlogs, maintenance; opt-in live disk probing of agents (usable space and volume totals, percentage thresholds); critical at a third or more agents down; safe actions (quiet-down, cancel queue item, state-checked node toggles) plus an opt-in per-node workspace wipe (admin token, per-job checks).",
   "kinds": [
     "service",
     "bar-widget"
