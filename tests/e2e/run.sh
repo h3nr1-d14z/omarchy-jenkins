@@ -754,7 +754,7 @@ PYEOF
     fi
   done
   rm -f "$action_srv" "$action_log"
-  echo "PASS: safe actions (3 shapes succeed with crumbs, failure feedback on 500)"
+  echo "PASS: safe actions (6 POSTs with crumbs incl. scriptText list+clean, failure feedback on 500)"
 }
 
 # ---- phase 7: widget lifecycle -----------------------------------------------
