@@ -963,14 +963,23 @@ function buildNetrc(user, token, jenkinsUrl) {
 // shell process — the script-console request alone has a 600s budget.
 // --max-filesize is the curl-native fast-fail when the endpoint declares
 // an oversized Content-Length; head -c bounds everything else (chunked
-// replies, endless streams). pipefail keeps curl's exit code
-// authoritative, so truncation (curl dies on SIGPIPE, exit 141) and
+// replies, endless streams). pipefail plus `wait "$J"` keeps curl's exit
+// code authoritative, so truncation (curl dies on SIGPIPE, exit 141) and
 // size-limit failures (exit 63) both fail closed.
+//
+// The pipeline runs in the background with a TERM/INT/EXIT trap that
+// kills the wrapper's children: a foreground pipeline would DEFER a
+// trapped signal until the pipeline finishes (never, on a hanging
+// endpoint), so tearing down the wrapper mid-request would orphan an
+// in-flight curl holding the admin-scoped request for its full budget.
+// Verified empirically: SIGTERM to the wrapper leaves zero surviving
+// children, and 0/22/28 (ok/HTTP-error/timeout) exit codes pass through.
 var MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 function boundedCommand(argv) {
   return ["bash", "-c",
-    "set -o pipefail; \"\$@\" | head -c " + MAX_RESPONSE_BYTES,
+    "set -o pipefail; \"\$@\" | head -c " + MAX_RESPONSE_BYTES
+      + " & J=\$!; trap \"pkill -P \$\$ 2>/dev/null; true\" TERM INT EXIT; wait \"\$J\"",
     "jh-curl"].concat(argv)
 }
 

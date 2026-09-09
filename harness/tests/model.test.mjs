@@ -586,6 +586,7 @@ check('buildCurlArgs: byte-cap wrap + core flags (curl, -fsS, --max-time 8)', ()
   assert.equal(args[0], 'bash');
   assert.equal(args[1], '-c');
   assert.ok(args[2].includes('set -o pipefail'), 'no pipefail');
+  assert.ok(args[2].includes('wait "$J"') && args[2].includes('pkill -P $$'), 'no teardown trap');
   assert.ok(args[2].includes('head -c ' + M.maxResponseBytes), 'no head cap');
   assert.equal(args[3], 'jh-curl');
   assert.equal(args[4], 'curl');

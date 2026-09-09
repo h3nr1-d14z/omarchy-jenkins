@@ -568,70 +568,92 @@ Item {
             Item {
               id: nodeLine
               width: parent.width
-              height: Style.space(26)
+              height: nodeTop.height
+                + (nodeSub.visible ? nodeSub.height + Style.space(2) : 0)
 
-              Text {
-                id: nodeName
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - nodeStats.width - nodeProbe.width - nodeClean.width - nodeAction.width - Style.space(24)
-                elide: Text.ElideRight
-                text: (modelData.state === "offline" ? "○ " : "● ") + modelData.displayName
-                color: root.nodeColor(modelData)
-                font.family: Style.font.family
-                font.pixelSize: Style.font.body
-              }
-              Text {
-                id: nodeStats
-                anchors.right: nodeProbe.left
-                anchors.rightMargin: nodeProbe.visible ? Style.space(8) : 0
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.nodeStats(modelData)
-                color: Color.muted
-                font.family: Style.font.family
-                font.pixelSize: Style.font.bodySmall
-              }
-              Button {
-                id: nodeProbe
-                visible: root.diskProbeEnabled && modelData.state === "online"
-                width: visible ? implicitWidth : 0
-                anchors.right: nodeClean.left
-                anchors.rightMargin: visible ? Style.space(4) : 0
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Check disk"
-                fontSize: Style.font.bodySmall
-                enabled: root.actionsEnabled
-                onClicked: if (root.service) {
-                  root.service.probeDisk(modelData.displayName)
+              // The name gets its own line with only the state toggle:
+              // on a single line, three action buttons plus the stats
+              // text left the anchored-left name squeezed to nothing
+              // and the node was unidentifiable.
+              Item {
+                id: nodeTop
+                width: parent.width
+                height: Style.space(26)
+
+                Text {
+                  id: nodeName
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - nodeAction.width - Style.space(8)
+                  elide: Text.ElideRight
+                  text: (modelData.state === "offline" ? "○ " : "● ") + modelData.displayName
+                  color: root.nodeColor(modelData)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Button {
+                  id: nodeAction
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: modelData.state === "online" ? "Take offline" : "Bring online"
+                  fontSize: Style.font.bodySmall
+                  enabled: root.actionsEnabled
+                  onClicked: if (root.service) {
+                    root.service.runAction(
+                      modelData.state === "online" ? "nodeOffline" : "nodeOnline",
+                      modelData.displayName)
+                  }
                 }
               }
 
-              Button {
-                id: nodeClean
-                visible: root.cleanWorkspaceEnabled
-                width: visible ? implicitWidth : 0
-                anchors.right: nodeAction.left
-                anchors.rightMargin: Style.space(4)
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Clean ws"
-                fontSize: Style.font.bodySmall
-                enabled: root.actionsEnabled
-                onClicked: if (root.service) {
-                  root.service.runAction("nodeWorkspaceList", modelData.displayName)
-                }
-              }
+              // Stats and the two telemetry actions wrap under the name.
+              Item {
+                id: nodeSub
+                anchors.top: nodeTop.bottom
+                anchors.topMargin: Style.space(2)
+                width: parent.width
+                height: Style.space(26)
+                visible: nodeStats.text !== "" || nodeProbe.visible || nodeClean.visible
 
-              Button {
-                id: nodeAction
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                text: modelData.state === "online" ? "Take offline" : "Bring online"
-                fontSize: Style.font.bodySmall
-                enabled: root.actionsEnabled
-                onClicked: if (root.service) {
-                  root.service.runAction(
-                    modelData.state === "online" ? "nodeOffline" : "nodeOnline",
-                    modelData.displayName)
+                Text {
+                  id: nodeStats
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - nodeProbe.width - nodeClean.width
+                    - (nodeProbe.visible ? Style.space(4) : 0)
+                    - (nodeClean.visible ? Style.space(4) : 0) - Style.space(8)
+                  elide: Text.ElideRight
+                  text: root.nodeStats(modelData)
+                  color: Color.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
+                }
+                Button {
+                  id: nodeProbe
+                  visible: root.diskProbeEnabled && modelData.state === "online"
+                  width: visible ? implicitWidth : 0
+                  anchors.right: nodeClean.left
+                  anchors.rightMargin: visible ? Style.space(4) : 0
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Check disk"
+                  fontSize: Style.font.bodySmall
+                  enabled: root.actionsEnabled
+                  onClicked: if (root.service) {
+                    root.service.probeDisk(modelData.displayName)
+                  }
+                }
+                Button {
+                  id: nodeClean
+                  visible: root.cleanWorkspaceEnabled
+                  width: visible ? implicitWidth : 0
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Clean ws"
+                  fontSize: Style.font.bodySmall
+                  enabled: root.actionsEnabled
+                  onClicked: if (root.service) {
+                    root.service.runAction("nodeWorkspaceList", modelData.displayName)
+                  }
                 }
               }
             }

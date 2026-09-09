@@ -225,8 +225,12 @@ Item {
       var override = Quickshell.env("JH_HISTORY_PATH") || ""
       historyPath = override ? override
         : expandTilde("~/.cache/jenkins-health/history.json")
+      // Same producer-side byte cap as every HTTP read: a corrupt or
+      // oversized cache file must not buffer unboundedly into the
+      // StdioCollector; a truncated file simply parses as empty history.
       historyReadProcess.command = [
-        "bash", "-c", 'cat "$1" 2>/dev/null || true', "jh-history-read", historyPath
+        "bash", "-c", 'head -c ' + Model.maxResponseBytes + ' "$1" 2>/dev/null || true',
+        "jh-history-read", historyPath
       ]
       historyReadProcess.running = true
     }
@@ -290,6 +294,7 @@ Item {
       var script = [
         'umask 077',
         'set -e',
+        "trap '[ -n \"\$tmp\" ] && rm -f \"\$tmp\" || true' EXIT TERM INT",
         'out="$1"; tf="${2/#\\~/$HOME}"; user="$3"; url="$4"',
         'h="${url#*://}"; h="${h%%/*}"; h="${h%%:*}"',
         'if [ -z "$h" ] || [ -z "$user" ]; then echo notoken; exit 0; fi',
@@ -302,8 +307,9 @@ Item {
         'tok="$(dd if="$tf" iflag=nofollow,nonblock bs=4096 count=1 2>/dev/null || true)"',
         '[ -n "$tok" ] || { echo notoken; exit 0; }',
         'd="${out%/*}"',
-        'mkdir -p "$d" 2>/dev/null || { echo writefail; exit 0; }',
-        'chmod 700 "$d" 2>/dev/null || true',
+        // -m applies only to directories we create; a pre-existing
+        // user directory (tokenFile=~/token → $HOME) is never chmodded.
+        'mkdir -p -m 700 "$d" 2>/dev/null || { echo writefail; exit 0; }',
         'tmp="$(mktemp "$d/.netrc.XXXXXX")" || { echo writefail; exit 0; }',
         "printf 'machine %s\\nlogin %s\\npassword %s\\n' \"$h\" \"$user\" \"$tok\" > \"$tmp\"",
         'chmod 600 "$tmp"',

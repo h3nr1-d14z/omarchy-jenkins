@@ -1040,6 +1040,16 @@ run_firstrun_phase() {
   fi
 }
 
+
+# Hostile-path matrix over the credential script extracted from the real
+# Service.qml (marketplace security-review contract).
+if node "$(dirname "$0")/../netrc_hardening.mjs" >"$TOKEN_DIR/netrc-hard.log" 2>&1; then
+  echo "PASS: netrc hardening matrix (21 checks, see $TOKEN_DIR/netrc-hard.log)"
+else
+  echo "FAIL: netrc hardening matrix (see $TOKEN_DIR/netrc-hard.log)"
+  cat "$TOKEN_DIR/netrc-hard.log" >&2
+  FAILED=1
+fi
 run_render_both_phases
 run_action_phase
 run_crumbless_phase
